@@ -596,7 +596,7 @@ def p_tokens(d, y, css):
         yr = ry + i * 30
         out += [text(M, yr + 16, k, 18), bar_row(M + 110, W - M - 76, yr + 10, 10, pct[k] / 1000, SHADES[i], "m" + k, k),
                 text(W - M, yr + 16, f"{pct[k] / 10:.1f}%", 18, INK, "end")]
-    return out, (ry - y) + max(len(segs), 1) * 30
+    return [grp("tokens", out)], (ry - y) + max(len(segs), 1) * 30
 
 
 # ---- activity, streak, languages, stack

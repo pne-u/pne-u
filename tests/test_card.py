@@ -194,17 +194,19 @@ with tempfile.TemporaryDirectory() as tmp:
         texts = list(root.iter(NS + "text"))
         if mx:
             assert abs(float(line.get("y1")) - (base - 110 * avg / mx)) < 0.01, name
-            assert sum(1 for e in bars if e.get("fill") == b.RED) == 1 and "peak" in [t.text for t in texts], name
-            letters = [t.text for t in texts if abs(float(t.get("y")) - (base + 28)) < 0.01]
+            assert sum(1 for e in bars if e.get("fill") == b.RED) == 1, name
+            assert f"avg {b.short(avg)}" in [t.text for t in texts], name             # the average line carries its value
+            letters = [t.text for t in texts if abs(float(t.get("y")) - (base + 28)) < 0.01 and len(t.text or "") == 1]
             assert "".join(letters) == "".join("MTWTFSS"[datetime.date.fromisoformat(x["date"]).weekday()] for x in sh["days"]), (name, letters)
         else:
-            assert "peak" not in [t.text for t in texts], name
+            pass
         # time of day: peak cell red, label from data
         hrs = sh["hours"]
-        reds = [int(e.get("data-h")) for e in root.iter() if e.get("class") == "cell" and e.get("fill") == b.RED]
+        reds = []
         if max(hrs):
             hp = hrs.index(max(hrs))
-            assert reds == [hp], (name, reds)
+            cells = {int(e.get("data-h")): e.get("fill") for e in root.iter() if e.get("class") == "cell"}
+            assert cells[hp] == b.INK and b.RED not in cells.values(), name         # peak hour is the brightest cell, no red
             assert f"peak {hp % 12 or 12}{'a' if hp < 12 else 'p'}" in [t.text for t in texts], name
         else:
             assert not reds and not [t.text for t in texts if (t.text or "").startswith("peak ")], name
@@ -230,4 +232,42 @@ with tempfile.TemporaryDirectory() as tmp:
     d1, d2 = data({day(0): 5}, {"Python": 1}, tmp), data({day(0): 5}, {"Python": 1}, tmp)
     assert b.build(d1) == b.build(d2)                                                  # byte-identical rebuilds
     assert b.wob(1, 2, 3) == b.wob(1, 2, 3) and abs(b.wob(7)) <= 1
+
+# ---- polish: value labels, removed text, one continuous banner path, spacing groups
+with tempfile.TemporaryDirectory() as tmp:
+    assert [b.short(v) for v in (0, 5, 950, 1_200, 48_000_000, 1_234_000_000, 6_278_959, 9_960_000, 999_700_000, 12_300_000_000)] ==         ["0", "5", "950", "1.2K", "48M", "1.2B", "6.3M", "10M", "1.0B", "12B"]
+    vals = [0, 6_278_959, 208_125_014, 0, 0, 6_596_181, 0, 0, 129_668_677, 192_071_521, 235_822_793, 6_373_315, 0, 75_839_768]
+    d = data({day(0): 1}, {"Python": 1}, tmp)
+    d["shape"] = shape(vals, [1] * 24, [1] * 7)
+    root = ET.fromstring(b.build(d))
+    texts = [t.text for t in root.iter(NS + "text")]
+    for gone in ("hollow = no usage", "best day", "peak", "avg"):
+        assert gone not in texts, gone                                                   # standalone labels are gone
+    assert any((t or "").startswith("avg ") for t in texts) and "breathe" in texts
+    labels = {int(t.get("data-day")): (t.text, t.get("fill"), float(t.get("x")), float(t.get("y"))) for t in root.iter(NS + "text") if t.get("data-day")}
+    mx = max(vals)
+    assert labels[10][0] == "236M" and labels[10][1] == b.RED and labels[13][0] == "76M"      # peak (red) and today always labelled
+    assert all(vals[i] and labels[i][0] == b.short(vals[i]) for i in labels) and not any(vals[i] == 0 for i in labels)
+    boxes = [(x - len(t) * b.LW / 2, x + len(t) * b.LW / 2, y - 16, y) for t, _, x, y in labels.values()]
+    for i, A in enumerate(boxes):
+        for B in boxes[i + 1:]:
+            assert A[1] + 3 <= B[0] or B[1] + 3 <= A[0] or A[3] + 2 <= B[2] or B[3] + 2 <= A[2], "labels overlap"
+    # crowded: neighbours collide, small bars (<15% of the max) lose their label, peak and today keep theirs
+    xs = [100 + 20 * i for i in range(6)]
+    got = b.daily_labels([1000, 900, 5, 800, 3, 4], xs, {i: 100 for i in range(6)}, 0, 5)
+    assert set(got) == {0, 3, 5}, set(got)        # <15% bars (2, 4) skipped, then 900 dropped next to the peak; peak and today kept
+    # banner: one path, left centre -> right centre, dot at the arc-length midpoint region; keyframes use the computed arrival
+    d = data({day(0): 1}, {"Python": 1}, tmp)
+    svg = b.build(d)
+    root = ET.fromstring(svg)
+    paths = [e for e in root.iter(NS + "path") if e.get("class") in ("base", "pulse", "tail")]
+    assert len(paths) == 3 and len({e.get("d") for e in paths}) == 1 and paths[0].get("d").count("M") == 1
+    g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)
+    assert 0.3 < g["l_dot"] / g["total"] < 0.7 and g["samples"][0][0] < 300 and g["samples"][-1][0] > 580 and g["samples"][0][0] < g["dot"][0] < g["samples"][-1][0]
+    css = ET.fromstring(svg).find(NS + "style").text
+    pd = b.inv_smooth(g["l_dot"] / (g["total"] * 1.18)) * b.TRAV * 100
+    assert f"@keyframes pop{{0%{{stroke-opacity:0}}{pd:.3f}%{{stroke-opacity:1}}" in css and "prefers-reduced-motion" in css
+    # groups for the spacing QC exist
+    ids = {e.get("id") for e in root.iter(NS + "g") if e.get("id")}
+    assert {"sec-banner", "sec-tokens", "sec-daily", "sec-tod", "sec-weekday", "sec-activity", "sec-streak", "sec-langs", "sec-stack", "sec-footer"} <= ids
 print("all edge-case checks passed")
