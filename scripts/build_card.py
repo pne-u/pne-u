@@ -603,11 +603,15 @@ def sec_daily(d, x, y, w, css=None):
     out.append(f'<circle class="today" cx="{xcs[ti]:.1f}" cy="{base + LET_DY + 14}" r="3.5" fill="{INK}"/>')
     ya = base - HM * avg / mx if mx > 0 else base
     bg = f' paint-order="stroke" stroke="#0A0A0A" stroke-width="5" stroke-linejoin="round"'   # cuts the dashed line behind label text
-    out.append(f'<line class="avg" x1="{x - 2}" y1="{ya:.2f}" x2="{x + aw + 2}" y2="{ya:.2f}" stroke="{SEC}" stroke-width="1" stroke-dasharray="3 5" '
-               f'opacity="0.4" data-avg="{avg:.3f}"/>' + text(x + aw + 8, round(ya + 5.5, 1), f"avg {short(avg)}", 16, SEC, "start", extra=bg))
+    dash = f'stroke="{SEC}" stroke-width="1" stroke-dasharray="3 5" opacity="0.4"'
+    out.append(f'<line class="avg" x1="{x - 2}" y1="{ya:.2f}" x2="{x + aw + 2}" y2="{ya:.2f}" {dash} data-avg="{avg:.3f}"/>')
+    at = f"avg {short(avg)}"
+    ax, tw = x + w, 9.2 * len(at)   # the average lives in the title row, right-aligned to the panel padding: dashed sample, then the text
+    out.append(f'<line class="avgkey" x1="{ax - tw - 28:.1f}" y1="{y + 11:.1f}" x2="{ax - tw - 10:.1f}" y2="{y + 11:.1f}" {dash}/>' + text(round(ax, 1), y + 16, at, 16, SEC, "end"))
     for i, (txt, lx, ly) in daily_labels(vals, xcs, tops, peak, ti).items():
-        if ly - 16 - 8 <= ya <= ly + 5 + 8:   # label box within 8px of the average line: lift it so its bottom edge is 8px above the line
-            ly = ya - 13
+        clr = 26 if lx + label_w(txt) / 2 > x + aw + 2 - 24 else 8   # nothing within 24px of the dashed line's end
+        if ly - 16 - clr <= ya <= ly + 5 + clr:   # label box too near the average line: lift it so its bottom edge clears the line
+            ly = ya - clr - 5
             hw, bw = label_w(txt) / 2, min(16, pitch - 6) / 2
             for j, tj in tops.items():   # a lifted label must not land on a taller neighbouring bar: slide it clear sideways
                 if j != i and tj < ly + 5 and abs(xcs[j] - lx) < hw + bw + 4:
