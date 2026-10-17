@@ -265,19 +265,30 @@ with tempfile.TemporaryDirectory() as tmp:
     g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)
     assert 0.3 < g["l_dot"] / g["total"] < 0.7 and g["samples"][0][0] < 300 and g["samples"][-1][0] > 580 and g["samples"][0][0] < g["dot"][0] < g["samples"][-1][0]
     css = ET.fromstring(svg).find(NS + "style").text
-    tm = b.breath_timing(g)
-    assert abs(tm["t_in"] + tm["t_out"] - 6.0) < 1e-9 and tm["hold"] == 1.0 and b.CYCLE == 8.0   # inhale + exhale keep their 6s; 1s hold; 1s rest
-    ti = tm["t_in"]
-    assert b.head_at(g, 0) == 0 and b.head_at(g, ti - 0.01) < g["l_dot"] < b.head_at(g, ti + 1.01)
-    assert all(abs(b.head_at(g, ti + k / 4) - g["l_dot"]) < 1e-9 for k in range(5))                # the pulse sits on the dot for exactly 1s
-    speed = lambda t: abs(b.head_at(g, t + 0.001) - b.head_at(g, t)) / 0.001
-    assert speed(ti - 0.002) < 0.02 * speed(ti / 2) and speed(ti + 1.0) < 0.02 * speed(ti + 1.0 + tm["t_out"] / 2) and speed(0) < 0.02 * speed(ti / 2)   # eased: no jump
-    assert abs(b.head_at(g, ti + 1.0 + tm["t_out"]) - g["total"] * 1.18) < 1e-6 and b.head_at(g, b.CYCLE) == b.head_at(g, ti + 1.0 + tm["t_out"])
-    pc = lambda t: f"{t / b.CYCLE * 100:.3f}%"
-    offs = re.search(r"@keyframes poff\{(.*?)\}\}?@keyframes", css).group(1)
-    got = dict(re.findall(r"([\d.]+%)\{stroke-dashoffset:(-?[\d.]+)\}", offs))
-    assert got[pc(ti)] == got[pc(ti + 1.0)], (got[pc(ti)], got[pc(ti + 1.0)])                       # identical dashoffset at both ends of the hold
-    assert f"{pc(ti)}{{stroke-opacity:1}}{pc(ti + 1.0)}{{stroke-opacity:1}}" in css and " 8s " in css and "prefers-reduced-motion" in css
+    cyc = b.INHALE + b.HOLD + b.EXHALE
+    assert b.CYCLE == cyc and f" {cyc}s " in css and "prefers-reduced-motion" in css                # cycle derived from the three constants
+    pc = lambda t: f"{t / cyc * 100:.4f}%"
+
+    def frames(name):
+        body = re.search(r"@keyframes " + name + r"\{(.*)", css).group(1)
+        body = body[:body.index("}}") + 2] if name else body
+        return re.findall(r"([\d.]+%)\{([^}]*)\}", body)
+    for name in ("poff", "pop", "warm"):
+        k = frames(name)
+        assert [p_ for p_, _ in k] == ["0%", pc(b.INHALE), pc(b.INHALE + b.HOLD), "100%"], (name, k)     # 4 keyframes, percentages from the constants
+        assert k[0][1].split(";animation")[0] == k[3][1] and k[1][1].split(";animation")[0] == k[2][1].split(";animation")[0]   # loop seam and hold are identical
+        assert [x[1].split("animation-timing-function:")[1] if "timing" in x[1] else None for x in k] == ["ease-in-out", "linear", "ease-in-out", None]
+    ti = b.INHALE
+    assert abs(b.head_at(g, 0)) < 1e-6 and abs(b.head_at(g, ti) - g["l_dot"]) < 1e-9 and abs(b.head_at(g, cyc - 1e-9)) < 1e-3
+    assert all(abs(b.head_at(g, ti + k * b.HOLD / 4) - g["l_dot"]) < 1e-9 for k in range(5))          # stationary for the whole hold
+    # HOLD = 0 drops the duplicate hold keyframe
+    old = (b.HOLD, b.CYCLE)
+    b.HOLD, b.CYCLE = 0, b.INHALE + b.EXHALE
+    try:
+        k0 = re.findall(r"([\d.]+%)\{([^}]*)\}", re.search(r"@keyframes poff\{(.*?)\}\}", b.breath_css(g)[0]).group(1) + "}")
+        assert [p_ for p_, _ in k0] == ["0%", f"{b.INHALE / b.CYCLE * 100:.4f}%", "100%"], k0
+    finally:
+        b.HOLD, b.CYCLE = old
     # groups for the spacing QC exist
     ids = {e.get("id") for e in root.iter(NS + "g") if e.get("id")}
     assert {"sec-banner", "sec-tokens", "sec-daily", "sec-tod", "sec-weekday", "sec-activity", "sec-streak", "sec-langs", "sec-stack", "sec-footer"} <= ids

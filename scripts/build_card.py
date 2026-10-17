@@ -15,6 +15,12 @@ from xml.sax.saxutils import escape
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ICON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@13.21.0/icons/{}.svg"
 
+# Breathing animation timing, in seconds. Everything else (cycle length, keyframe percentages) is derived from these.
+INHALE = 4
+HOLD = 2
+EXHALE = 6
+CYCLE = INHALE + HOLD + EXHALE
+
 
 # ---------------------------------------------------------------- data
 
@@ -354,69 +360,46 @@ def banner_geometry(d, y):
     return {"d": path, "total": s, "l_dot": l_left + gap / 2, "samples": samples, "dot": T((dx, dy))}
 
 
-def smooth(u):
-    return u * u * (3 - 2 * u)
-
-
-def inv_smooth(r):
+def ease(u):
+    """CSS ease-in-out, cubic-bezier(.42, 0, .58, 1): the eased progress for linear progress u."""
+    bez = lambda t, a, b: 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3
     lo, hi = 0.0, 1.0
     for _ in range(50):
         mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if smooth(mid) < r else (lo, mid)
-    return (lo + hi) / 2
-
-
-TRAVEL, HOLD, CYCLE = 6.0, 1.0, 8.0  # inhale + exhale = 6s as before; the pulse holds 1s at the dot; 1s of rest
-
-
-def breath_timing(g):
-    """Inhale = the time the pulse used to take from the left centre to the dot; exhale = the rest of the old 6s travel."""
-    L = g["total"]
-    t_in = inv_smooth(g["l_dot"] / (L + 0.18 * L)) * TRAVEL
-    return {"t_in": t_in, "t_out": TRAVEL - t_in, "hold": HOLD, "cycle": CYCLE}
+        lo, hi = (mid, hi) if bez(mid, 0.42, 0.58) < u else (lo, mid)
+    return bez((lo + hi) / 2, 0, 1)
 
 
 def head_at(g, t):
-    """Leading end of the pulse (arc length) at time t of the loop: ease in to the dot, hold exactly 1s there, ease out to the far end.
-    Velocity is zero at the start, at both ends of the hold and at the end, so there are no jumps."""
-    L = g["total"]
-    P, ld, tm = 0.18 * L, g["l_dot"], breath_timing(g)
-    if t <= 0:
-        return 0.0
-    if t < tm["t_in"]:
-        return ld * smooth(t / tm["t_in"])
-    if t <= tm["t_in"] + HOLD:
-        return ld
-    return ld + (L + P - ld) * smooth(min(1.0, (t - tm["t_in"] - HOLD) / tm["t_out"]))
-
-
-def key_times(g, lag=0.0, n_in=14, n_out=16):
-    tm = breath_timing(g)
-    base = ([tm["t_in"] * k / n_in for k in range(n_in + 1)] + [tm["t_in"] + HOLD]
-            + [tm["t_in"] + HOLD + tm["t_out"] * k / n_out for k in range(1, n_out + 1)])
-    return sorted({round(t, 4) for t in base + [t + lag for t in base] + [0.0, CYCLE] if 0 <= t <= CYCLE})
+    """Where the pulse head is (arc length) at time t of the loop: out at 0, on the dot after INHALE, held for HOLD, back out after EXHALE."""
+    t %= CYCLE
+    if t <= INHALE:
+        return g["l_dot"] * ease(t / INHALE)
+    if t <= INHALE + HOLD:
+        return g["l_dot"]
+    return g["l_dot"] * (1 - ease((t - INHALE - HOLD) / EXHALE))
 
 
 def breath_css(g):
-    """All banner keyframes, in percent of the 8s loop, from the computed arc lengths and phase times."""
-    L, tm = g["total"], breath_timing(g)
-    P = 0.18 * L
-    pc = lambda t: f"{t / CYCLE * 100:.3f}%"
-    ti, th, to = tm["t_in"], tm["t_in"] + HOLD, tm["t_in"] + HOLD + tm["t_out"]
-    lag = 0.2
+    """Keyframes for the banner: 0% outer, INHALE at the dot, INHALE+HOLD still at the dot, 100% outer again.
+    A timing function in a keyframe shapes the segment that starts there: ease-in-out inhale, linear hold, ease-in-out exhale."""
+    P = 0.18 * g["total"]
+    pc = lambda t: f"{t / CYCLE * 100:.4f}%"
+    eio, lin = "animation-timing-function:ease-in-out", "animation-timing-function:linear"
 
-    def offsets(name, lag_):
-        rows = "".join(f"{pc(t)}{{stroke-dashoffset:{P - head_at(g, t - lag_):.2f}}}" for t in key_times(g, lag_))
-        return f"@keyframes {name}{{{rows}}}"
-
-    def env(name, peak, lag_):
-        return (f"@keyframes {name}{{0%{{stroke-opacity:0}}{pc(ti + lag_)}{{stroke-opacity:{peak}}}{pc(th + lag_)}{{stroke-opacity:{peak}}}"
-                f"{pc(to + lag_)}{{stroke-opacity:0}}100%{{stroke-opacity:0}}}}")
-    return (offsets("poff", 0) + offsets("toff", lag) + env("pop", 1, 0) + env("top", 0.45, lag)
-            + f"@keyframes ptint{{0%,{pc(ti - 0.3)}{{stroke:{INK}}}{pc(ti)},{pc(th)}{{stroke:#FFC9B5}}{pc(th + 0.8)},100%{{stroke:{INK}}}}}"
-            f"@keyframes warm{{0%,{pc(ti - 0.6)}{{opacity:.22;transform:scale(1)}}{pc(ti)},{pc(th)}{{opacity:.95;transform:scale(1.15)}}"
-            f"{pc(th + 0.9)},100%{{opacity:.22;transform:scale(1)}}}}"
-            f"@keyframes ring{{0%,{pc(ti - 0.6)}{{opacity:0}}{pc(ti)},{pc(th)}{{opacity:.5}}{pc(th + 0.9)},100%{{opacity:0}}}}"), P
+    def frames(name, outer, dot):
+        kf = f"0%{{{outer};{eio}}}"
+        if HOLD:
+            kf += f"{pc(INHALE)}{{{dot};{lin}}}{pc(INHALE + HOLD)}{{{dot};{eio}}}"
+        else:                                    # no hold: a single keyframe at the dot, the exhale easing starts there
+            kf += f"{pc(INHALE)}{{{dot};{eio}}}"
+        return f"@keyframes {name}{{{kf}100%{{{outer}}}}}"
+    off, on = f"stroke-dashoffset:{P:.2f}", f"stroke-dashoffset:{P - g['l_dot']:.2f}"
+    return "".join([frames("poff", off, on), frames("toff", off, on),
+                    frames("pop", "stroke-opacity:0", "stroke-opacity:1"), frames("top", "stroke-opacity:0", "stroke-opacity:.45"),
+                    frames("ptint", f"stroke:{INK}", "stroke:#FFC9B5"),
+                    frames("warm", "opacity:.22;transform:scale(1)", "opacity:.95;transform:scale(1.15)"),
+                    frames("ring", "opacity:0", "opacity:.5")]), P
 
 
 def grp(name, parts):
@@ -782,7 +765,7 @@ def build(d):
         f".dotw{{transform-box:fill-box;transform-origin:center;animation:warm {cyc} linear infinite}}"
         f".ring{{animation:ring {cyc} linear infinite}}"
         f".pulse{{animation:poff {cyc} linear infinite,pop {cyc} linear infinite,ptint {cyc} linear infinite}}"
-        f".tail{{animation:toff {cyc} linear infinite,top {cyc} linear infinite}}"
+        f".tail{{animation:toff {cyc} linear infinite,top {cyc} linear infinite;animation-delay:.2s}}"
         ".bar{transform-box:fill-box;transform-origin:50% 100%;animation:breath-bar 6s ease-in-out infinite}"
         ".sweep{animation:sweep 2.4s ease-in-out infinite}"
         "@media (prefers-reduced-motion:reduce){.dotw,.ring,.bar{animation:none}.pulse,.tail,.sweep{display:none}.base{opacity:.7}.dotw{opacity:.8}.ring{opacity:.25}}")
