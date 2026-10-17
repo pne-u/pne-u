@@ -293,9 +293,12 @@ def noisy_path(d, key, ax, ay):
 # ---- banner: the traced double spiral at its original proportions, in its own row, as ONE continuous path
 # left tip -> inward/outward coils -> S-line -> red dot (exactly on the path) -> right coils -> right tip
 
-SPIRAL_S = 0.7      # uniform scale of the traced spiral: no stretching
-SPIRAL_TOP = 12     # top of the spiral row
-HEADER_H = 194      # spiral row + title row
+SPIRAL_W = 700      # the traced spiral is stretched to span most of the header width...
+SPIRAL_H = 110      # ...and fits a 100-120px band
+SPIRAL_CY = 62      # y of the spiral centre = the red dot = the middle of the capital letters
+HEADER_H = 134      # band height including the tagline
+DOT_R = 8           # radius of the red dot
+TITLE_SIZE = 64     # title font size in px (the title is drawn from glyph outlines)
 PL = 1000           # pathLength of the spiral: dash values are in these units, so the head and trace land on the tips in any renderer
 
 
@@ -334,11 +337,11 @@ def banner_geometry(d, y=0):
     """The merged spiral path in page coordinates (hand-made wobble applied), its length, the arc length to the dot, sample points."""
     lg = d["logo"]
     dx, dy, _ = lg["dot"]
-    s = SPIRAL_S
-    cx, cy = W / 2, y + SPIRAL_TOP + 75 * s
-    T = lambda p: (cx + (p[0] - dx) * s, cy + (p[1] - dy) * s)
-    _, lsegs = parse_bez(noisy_path(lg["left"], 0, 1.0 / s, 1.0 / s))      # runs dot -> left tip
-    _, rsegs = parse_bez(noisy_path(lg["right"], 1, 1.0 / s, 1.0 / s))     # runs dot -> right tip
+    sx, sy = SPIRAL_W / 300, SPIRAL_H / 150
+    cx, cy = W / 2, y + SPIRAL_CY
+    T = lambda p: (cx + (p[0] - dx) * sx, cy + (p[1] - dy) * sy)
+    _, lsegs = parse_bez(noisy_path(lg["left"], 0, 1.0 / sx, 1.0 / sy))      # runs dot -> left tip
+    _, rsegs = parse_bez(noisy_path(lg["right"], 1, 1.0 / sx, 1.0 / sy))     # runs dot -> right tip
     start, lrev = reverse_bez((dx, dy), lsegs)                              # left tip -> dot; both arms start exactly on the dot
     lrev = [(T(a), T(b), T(c)) for a, b, c in lrev]
     rsegs = [(T(a), T(b), T(c)) for a, b, c in rsegs]
@@ -403,29 +406,61 @@ def grp(name, parts):
     return f'<g id="sec-{name}">' + "".join(parts) + "</g>"
 
 
+def title_layout(name, size, mid_gap):
+    """Lay the title out from real glyph outlines (data/title-glyphs.json, same font as the embedded display font).
+    The two middle letters are pushed apart until their INK edges are mid_gap apart; the shared axis is the midpoint of that gap
+    (right ink edge of the left middle letter + left ink edge of the right middle letter) / 2. Returns (letters, axis, total_width, cap_px)."""
+    gl = read("title-glyphs.json")
+    k = size / gl["upem"]
+    chars, mid = list(name), len(name) // 2
+    x, pos = 0.0, []
+    for i, ch in enumerate(chars):
+        g = gl["glyphs"][ch]
+        if i == mid:
+            x += max(0.0, mid_gap - ((x + g["bbox"][0] * k) - pos[-1]["ink_r"]))
+        pos.append({"ch": ch, "x": x, "ink_l": x + g["bbox"][0] * k, "ink_r": x + g["bbox"][2] * k, "g": g})
+        x += g["adv"] * k
+    axis = (pos[mid - 1]["ink_r"] + pos[mid]["ink_l"]) / 2
+    return pos, axis, pos[-1]["ink_r"] - pos[0]["ink_l"], gl["cap"] * k
+
+
 def p_banner(d, y, css):
+    """Header band, drawn back to front: 1) faint static spiral outline, 2) title (glyph paths) + tagline + note, 3) animated trace, red dot, head."""
     g = banner_geometry(d, y)
-    cx, cy = g["dot"]
+    cx, cy = g["dot"]                       # the red dot: x = the title's gap axis = card centre, y = middle of the capital letters
     kf, P, eps = breath_css(g)
     css.append(kf)
     L = PL
-    line = f'd="{g["d"]}" pathLength="{PL}" fill="none" stroke="{INK}" stroke-linecap="round" stroke-linejoin="round"'
-    out = [f'<path class="base" {line} stroke-width="2.8" opacity=".35"/>',
-           f'<circle class="dot" cx="{cx:.2f}" cy="{cy:.2f}" r="7" fill="{RED}"/>',
-           f'<path class="trace" {line} stroke-width="3.2" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
-           f'<path class="head" {line} stroke-width="9" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>']
+    line = f'd="{g["d"]}" pathLength="{PL}" fill="none" stroke-linecap="round" stroke-linejoin="round"'
+    back = [f'<path class="base" {line} stroke="{INK}" stroke-width="2.8" opacity=".25"/>']
     name = clip(d["prof"]["name"].upper(), 12)
-    size = fit(name, 52, 300)
-    nw, tag = len(name) * 0.6 * size, d["prof"].get("tagline") or ""
-    tw = len(tag) * 9.6
-    show = bool(tag) and nw + 24 + tw <= W - 2 * MG       # the tagline sits on the name's line only when it fits
-    x0 = (W - (nw + 24 + tw if show else nw)) / 2
-    by = y + SPIRAL_TOP + 150 * SPIRAL_S + 12 + size * 0.74
-    out.append(disp(round(x0, 1), round(by, 1), name, size, INK, "start"))
-    if show:
-        out.append(text(round(x0 + nw + 24, 1), round(by, 1), tag, 18, SEC))
-    out.append(note(MG + 6, y + SPIRAL_TOP + 40, "breathe"))
-    return [grp("banner", out)], HEADER_H
+    gl = read("title-glyphs.json")
+    mid_gap = 2 * DOT_R + 12                 # ink gap between the two middle letters: the dot plus 6px of air on each side
+    title, size = [], TITLE_SIZE
+    if all(c in gl["glyphs"] for c in name):
+        _, _, width, _ = title_layout(name, size, mid_gap)
+        size = min(size, size * (W - 2 * MG - 40) / width)
+        letters, axis, width, cap = title_layout(name, size, mid_gap)
+        x0, base_y = cx - axis, cy + cap / 2   # shift so the axis lands on the card centre; baseline puts the cap-height middle on the dot
+        k = size / gl["upem"]
+        for i, lt in enumerate(letters):
+            title.append(f'<path id="t{i}-{lt["ch"]}" d="{lt["g"]["d"]}" transform="translate({x0 + lt["x"]:.2f} {base_y:.2f}) scale({k:.5f} {-k:.5f})" '
+                         f'fill="{INK}" data-ink-l="{x0 + lt["ink_l"]:.2f}" data-ink-r="{x0 + lt["ink_r"]:.2f}"/>')
+        title = [f'<g id="title" role="img" aria-label="{escape(name)}">' + "".join(title) + "</g>"]
+    else:                                    # glyph not available: plain text on the same axis
+        size = fit(name, 40, 520)
+        base_y = cy + size * 0.365
+        title = [disp(cx, round(base_y, 1), name, size, INK, "middle")]
+    outline = f' stroke="{BG}" stroke-width="4" paint-order="stroke" stroke-linejoin="round"'
+    if d["prof"].get("tagline"):
+        title.append(text(cx, round(base_y + 34, 1), d["prof"]["tagline"], 18, SEC, "middle", extra=outline))   # centred under the title, same axis
+    title.append(note(MG + 4, y + 30, "breathe"))
+    front = [f'<path class="traceout" {line} stroke="{BG}" stroke-width="6.8" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
+             f'<path class="trace" {line} stroke="{INK}" stroke-width="3.2" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
+             f'<circle class="dot" cx="{cx:.2f}" cy="{cy:.2f}" r="{DOT_R}" fill="{RED}"/>',
+             f'<path class="headout" {line} stroke="{BG}" stroke-width="10" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>',
+             f'<path class="head" {line} stroke="{INK}" stroke-width="7" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>']
+    return [grp("banner", back + title + front)], HEADER_H
 
 
 # ---- usage shape (daily tokens, time of day, weekday)
@@ -772,11 +807,11 @@ def build(d):
         (f"@font-face{{font-family:PneuMono;font-weight:800;src:url(data:font/woff2;base64,{dfont}) format('woff2')}}" if dfont else "")
         + (f"@font-face{{font-family:Caveat;font-weight:400;src:url(data:font/woff2;base64,{nfont}) format('woff2')}}" if nfont else "")
         + "@keyframes breath-bar{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.04)}}"
-        f".trace{{animation:tdash {cyc} linear infinite,fade {cyc} linear infinite}}"
-        f".head{{animation:hdash {cyc} linear infinite,fade {cyc} linear infinite}}"
+        f".trace,.traceout{{animation:tdash {cyc} linear infinite,fade {cyc} linear infinite}}"
+        f".head,.headout{{animation:hdash {cyc} linear infinite,fade {cyc} linear infinite}}"
         ".bar{transform-box:fill-box;transform-origin:50% 100%;animation:breath-bar 6s ease-in-out infinite}"
         ".sweep{animation:sweep 2.4s ease-in-out infinite}"
-        "@media (prefers-reduced-motion:reduce){.bar{animation:none}.trace,.head,.sweep{display:none}.base{opacity:.7}}")
+        "@media (prefers-reduced-motion:reduce){.bar{animation:none}.trace,.traceout,.head,.headout,.sweep{display:none}.base{opacity:.35}}")
     desc = (f"{d['prof']['name']} GitHub profile card: {len(d['tools'])} tools, {n(d['total'])} contributions, "
             f"{d['cur']} day streak, {n(d['tokens']['total'])} tokens.")
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{height}" viewBox="0 0 {W} {height}" role="img" aria-label="{escape(desc)}">'

@@ -260,8 +260,8 @@ with tempfile.TemporaryDirectory() as tmp:
     d = data({day(0): 1}, {"Python": 1}, tmp)
     svg = b.build(d)
     root = ET.fromstring(svg)
-    paths = [e for e in root.iter(NS + "path") if e.get("class") in ("base", "trace", "head")]
-    assert [e.get("class") for e in paths] == ["base", "trace", "head"] and len({e.get("d") for e in paths}) == 1 and paths[0].get("d").count("M") == 1
+    paths = [e for e in root.iter(NS + "path") if e.get("class") in ("base", "traceout", "trace", "headout", "head")]
+    assert [e.get("class") for e in paths] == ["base", "traceout", "trace", "headout", "head"] and len({e.get("d") for e in paths}) == 1 and paths[0].get("d").count("M") == 1
     g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)                                    # one path, three strokes
     cx, cy = g["dot"]
     near = min(g["samples"], key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
@@ -310,4 +310,21 @@ with tempfile.TemporaryDirectory() as tmp:
     # every progress bar fill is the card's red; tracks stay dark grey
     root = ET.fromstring(b.build(d))
     assert all(e.get("fill") == b.RED for e in fills(root)) and all(e.get("fill") == b.TRACK for e in root.iter() if e.get("class") == "trk")
+    # layered header: draw order, shared axis, dot at the middle of the capital letters, tagline centred
+    svg = b.build(data({day(0): 1}, {"Python": 1}, tmp))
+    order = [svg.index(k) for k in ('class="base"', 'id="title"', 'class="traceout"', 'class="trace"', 'class="dot"', 'class="head"')]
+    assert order == sorted(order) and svg.index('breathe') < svg.index('class="traceout"')            # outline < title/note < trace, dot, head
+    root = ET.fromstring(svg)
+    gl = [e for e in root.iter(NS + "path") if e.get("data-ink-l")]
+    assert [e.get("id")[-1] for e in gl] == list("PNEU")
+    Nr, El = float(gl[1].get("data-ink-r")), float(gl[2].get("data-ink-l"))
+    dot = [e for e in root.iter(NS + "circle") if e.get("class") == "dot"][0]
+    dcx, dcy, r = float(dot.get("cx")), float(dot.get("cy")), float(dot.get("r"))
+    assert abs((Nr + El) / 2 - b.W / 2) < 0.01 and abs(dcx - b.W / 2) < 0.01                       # gap axis = card centre = dot x
+    assert abs((dcx - r - Nr) - (El - (dcx + r))) < 0.01 and El - Nr >= 2 * r + 10                   # equal air on both sides of the dot
+    import re as _re
+    ty, k = (lambda m_: (float(m_.group(1)), float(m_.group(2))))(_re.search(r"translate\([-\d.]+ ([-\d.]+)\) scale\(([\d.]+)", gl[0].get("transform")))
+    assert abs((ty - 730 * k / 2) - dcy) < 0.05                                                      # dot y = middle of the capital letters
+    tag = [t_ for t_ in root.iter(NS + "text") if t_.text and t_.text.startswith("systems")][0]
+    assert abs(float(tag.get("x")) - b.W / 2) < 0.01 and tag.get("text-anchor") == "middle" and float(tag.get("y")) > ty
 print("all edge-case checks passed")
