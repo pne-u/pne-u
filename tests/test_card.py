@@ -184,7 +184,7 @@ with tempfile.TemporaryDirectory() as tmp:
         base = float(bars[0].get("data-base")) if bars else None
         peak = vals.index(mx) if mx else None                                        # ties: the first of the maxima
         for e, (i, v) in zip(bars, nz):
-            h = max(1.5, 110 * v / mx)
+            h = max(1.5, b.HM * v / mx)
             y = ys(e)
             assert abs(min(y) - (base - h)) < 0.01 and abs(max(y) - base) < 0.01 and abs(float(e.get("data-h")) - h) < 0.01, (name, i)
             want = b.RED if i == peak else (b.DIM if v < 0.5 * avg else b.INK)
@@ -193,10 +193,10 @@ with tempfile.TemporaryDirectory() as tmp:
         assert abs(float(line.get("data-avg")) - avg) < 0.001
         texts = list(root.iter(NS + "text"))
         if mx:
-            assert abs(float(line.get("y1")) - (base - 110 * avg / mx)) < 0.01, name
+            assert abs(float(line.get("y1")) - (base - b.HM * avg / mx)) < 0.01, name
             assert sum(1 for e in bars if e.get("fill") == b.RED) == 1, name
             assert f"avg {b.short(avg)}" in [t.text for t in texts], name             # the average line carries its value
-            letters = [t.text for t in texts if abs(float(t.get("y")) - (base + 28)) < 0.01 and len(t.text or "") == 1]
+            letters = [t.text for t in texts if abs(float(t.get("y")) - (base + b.LET_DY)) < 0.01 and len(t.text or "") == 1]
             assert "".join(letters) == "".join("MTWTFSS"[datetime.date.fromisoformat(x["date"]).weekday()] for x in sh["days"]), (name, letters)
         else:
             pass
@@ -213,7 +213,7 @@ with tempfile.TemporaryDirectory() as tmp:
         # weekday bars: heights, best brightest, weakest dimmer
         for e in [e for e in root.iter() if e.get("class") == "wbar"]:
             v, h = int(e.get("data-v")), float(e.get("data-h"))
-            assert abs(h - max(1.5, 56 * v / max(wk))) < 0.01 and abs((max(ys(e)) - min(ys(e))) - h) < 0.01, name
+            assert abs(h - max(1.5, b.WH * v / max(wk))) < 0.01 and abs((max(ys(e)) - min(ys(e))) - h) < 0.01, name
             if v == min(wk) and max(wk) != min(wk):
                 assert e.get("fill") == b.DIM, name
         best = [e for e in root.iter() if e.get("class") == "wbar" and e.get("fill") == b.INK]
@@ -265,8 +265,19 @@ with tempfile.TemporaryDirectory() as tmp:
     g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)
     assert 0.3 < g["l_dot"] / g["total"] < 0.7 and g["samples"][0][0] < 300 and g["samples"][-1][0] > 580 and g["samples"][0][0] < g["dot"][0] < g["samples"][-1][0]
     css = ET.fromstring(svg).find(NS + "style").text
-    pd = b.inv_smooth(g["l_dot"] / (g["total"] * 1.18)) * b.TRAV * 100
-    assert f"@keyframes pop{{0%{{stroke-opacity:0}}{pd:.3f}%{{stroke-opacity:1}}" in css and "prefers-reduced-motion" in css
+    tm = b.breath_timing(g)
+    assert abs(tm["t_in"] + tm["t_out"] - 6.0) < 1e-9 and tm["hold"] == 1.0 and b.CYCLE == 8.0   # inhale + exhale keep their 6s; 1s hold; 1s rest
+    ti = tm["t_in"]
+    assert b.head_at(g, 0) == 0 and b.head_at(g, ti - 0.01) < g["l_dot"] < b.head_at(g, ti + 1.01)
+    assert all(abs(b.head_at(g, ti + k / 4) - g["l_dot"]) < 1e-9 for k in range(5))                # the pulse sits on the dot for exactly 1s
+    speed = lambda t: abs(b.head_at(g, t + 0.001) - b.head_at(g, t)) / 0.001
+    assert speed(ti - 0.002) < 0.02 * speed(ti / 2) and speed(ti + 1.0) < 0.02 * speed(ti + 1.0 + tm["t_out"] / 2) and speed(0) < 0.02 * speed(ti / 2)   # eased: no jump
+    assert abs(b.head_at(g, ti + 1.0 + tm["t_out"]) - g["total"] * 1.18) < 1e-6 and b.head_at(g, b.CYCLE) == b.head_at(g, ti + 1.0 + tm["t_out"])
+    pc = lambda t: f"{t / b.CYCLE * 100:.3f}%"
+    offs = re.search(r"@keyframes poff\{(.*?)\}\}?@keyframes", css).group(1)
+    got = dict(re.findall(r"([\d.]+%)\{stroke-dashoffset:(-?[\d.]+)\}", offs))
+    assert got[pc(ti)] == got[pc(ti + 1.0)], (got[pc(ti)], got[pc(ti + 1.0)])                       # identical dashoffset at both ends of the hold
+    assert f"{pc(ti)}{{stroke-opacity:1}}{pc(ti + 1.0)}{{stroke-opacity:1}}" in css and " 8s " in css and "prefers-reduced-motion" in css
     # groups for the spacing QC exist
     ids = {e.get("id") for e in root.iter(NS + "g") if e.get("id")}
     assert {"sec-banner", "sec-tokens", "sec-daily", "sec-tod", "sec-weekday", "sec-activity", "sec-streak", "sec-langs", "sec-stack", "sec-footer"} <= ids
