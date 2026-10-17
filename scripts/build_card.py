@@ -143,7 +143,7 @@ def fetch_icons():
 
 # ---------------------------------------------------------------- drawing
 
-W, M = 880, 40
+W, M = 830, 40
 IW = W - 2 * M
 BG, INK, SEC, BAR, TRACK, EMPTY, RED = "#0A0A0A", "#EFEBE0", "#CDC9BE", "#A6A399", "#262522", "#3A3935", "#FF6F61"
 DIM, MID, AXIS = "#7C7A72", "#BDBAAE", "#5A5953"
@@ -290,9 +290,13 @@ def noisy_path(d, key, ax, ay):
     return re.sub(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)", sub, d)
 
 
-# ---- banner: ONE continuous path, left spiral centre -> outward -> S-line -> dot -> right spiral -> right centre
+# ---- banner: the traced double spiral at its original proportions, in its own row, as ONE continuous path
+# left tip -> inward/outward coils -> S-line -> red dot (exactly on the path) -> right coils -> right tip
 
-TRAV = 6 / 7  # share of the 7s loop spent travelling; the last second is rest
+SPIRAL_S = 0.7      # uniform scale of the traced spiral: no stretching
+SPIRAL_TOP = 12     # top of the spiral row
+HEADER_H = 194      # spiral row + title row
+PL = 1000           # pathLength of the spiral: dash values are in these units, so the head and trace land on the tips in any renderer
 
 
 def parse_bez(d):
@@ -326,38 +330,33 @@ def bez_samples(p0, c1, c2, p1, n=32):
     return total, out
 
 
-def banner_geometry(d, y):
-    """The merged banner path in page coordinates (wobble applied), its length, the arc length to the dot and sample points."""
+def banner_geometry(d, y=0):
+    """The merged spiral path in page coordinates (hand-made wobble applied), its length, the arc length to the dot, sample points."""
     lg = d["logo"]
     dx, dy, _ = lg["dot"]
-    sx, sy = IW / 300, 0.55
-    cy = y + BANNER_H / 2
-    tx, ty = M - 80 * sx, cy - dy * sy
-    T = lambda p: (tx + p[0] * sx, ty + p[1] * sy)
-    ls, lsegs = parse_bez(noisy_path(lg["left"], 0, 1.0 / sx, 1.2 / sy))   # runs dot -> left spiral centre
-    rs, rsegs = parse_bez(noisy_path(lg["right"], 1, 1.0 / sx, 1.2 / sy))  # runs dot -> right spiral centre
-    start, lrev = reverse_bez(ls, lsegs)                                    # now runs left centre -> dot
-    start = T(start)
+    s = SPIRAL_S
+    cx, cy = W / 2, y + SPIRAL_TOP + 75 * s
+    T = lambda p: (cx + (p[0] - dx) * s, cy + (p[1] - dy) * s)
+    _, lsegs = parse_bez(noisy_path(lg["left"], 0, 1.0 / s, 1.0 / s))      # runs dot -> left tip
+    _, rsegs = parse_bez(noisy_path(lg["right"], 1, 1.0 / s, 1.0 / s))     # runs dot -> right tip
+    start, lrev = reverse_bez((dx, dy), lsegs)                              # left tip -> dot; both arms start exactly on the dot
     lrev = [(T(a), T(b), T(c)) for a, b, c in lrev]
-    rstart = T(rs)
     rsegs = [(T(a), T(b), T(c)) for a, b, c in rsegs]
+    start = T(start)
     cmd = lambda c1, c2, p: f"C{c1[0]:.2f} {c1[1]:.2f} {c2[0]:.2f} {c2[1]:.2f} {p[0]:.2f} {p[1]:.2f}"
-    path = f"M{start[0]:.2f} {start[1]:.2f}" + "".join(cmd(*s) for s in lrev)
-    s, cur, samples = 0.0, start, [(start[0], start[1], 0.0)]
-    for c1, c2, p in lrev:
-        length, pts = bez_samples(cur, c1, c2, p)
-        samples += [(x, yy, s + l) for x, yy, l in pts]
-        s, cur = s + length, p
-    l_left = s
-    gap = math.hypot(rstart[0] - cur[0], rstart[1] - cur[1])
-    path += f"L{rstart[0]:.2f} {rstart[1]:.2f}" + "".join(cmd(*s_) for s_ in rsegs)
-    s, cur = s + gap, rstart
-    samples.append((rstart[0], rstart[1], s))
-    for c1, c2, p in rsegs:
-        length, pts = bez_samples(cur, c1, c2, p)
-        samples += [(x, yy, s + l) for x, yy, l in pts]
-        s, cur = s + length, p
-    return {"d": path, "total": s, "l_dot": l_left + gap / 2, "samples": samples, "dot": T((dx, dy))}
+    path = f"M{start[0]:.2f} {start[1]:.2f}" + "".join(cmd(*seg) for seg in lrev) + "".join(cmd(*seg) for seg in rsegs)
+    total, cur, samples, l_dot = 0.0, start, [(start[0], start[1], 0.0)], 0.0
+    for part, segs in ((0, lrev), (1, rsegs)):
+        for c1, c2, p in segs:
+            length, pts = bez_samples(cur, c1, c2, p)
+            samples += [(x, yy, total + l) for x, yy, l in pts]
+            total, cur = total + length, p
+        if part == 0:
+            l_dot = total
+    return {"d": path, "total": total, "l_dot": l_dot, "samples": samples, "dot": (cx, cy)}
+
+
+FADE_IN, FADE_OUT = 0.05 * INHALE, 0.05 * EXHALE  # seconds; hides the jump from the right tip back to the left tip when the loop restarts
 
 
 def ease(u):
@@ -371,35 +370,33 @@ def ease(u):
 
 
 def head_at(g, t):
-    """Where the pulse head is (arc length) at time t of the loop: out at 0, on the dot after INHALE, held for HOLD, back out after EXHALE."""
+    """Where the head is (arc length) at time t of the loop: left tip at 0, on the dot after INHALE, held for HOLD, right tip after EXHALE."""
     t %= CYCLE
     if t <= INHALE:
         return g["l_dot"] * ease(t / INHALE)
     if t <= INHALE + HOLD:
         return g["l_dot"]
-    return g["l_dot"] * (1 - ease((t - INHALE - HOLD) / EXHALE))
+    return g["l_dot"] + (g["total"] - g["l_dot"]) * ease((t - INHALE - HOLD) / EXHALE)
 
 
 def breath_css(g):
-    """Keyframes for the banner: 0% outer, INHALE at the dot, INHALE+HOLD still at the dot, 100% outer again.
-    A timing function in a keyframe shapes the segment that starts there: ease-in-out inhale, linear hold, ease-in-out exhale."""
-    P = 0.18 * g["total"]
+    """Keyframes: 0% left tip, INHALE% on the dot, INHALE+HOLD% still on the dot, 100% right tip. A timing function in a keyframe shapes the
+    segment that starts there: ease-in-out inhale, linear hold, ease-in-out exhale. The trace and the head are the same path animated with
+    the same keyframes (a long dash and a zero-length round dash), so the head cannot drift off the tip of the trace."""
+    L, ld = PL, PL * g["l_dot"] / g["total"]       # normalised units (pathLength)
+    P, eps = 0.16 * PL, 0.8
     pc = lambda t: f"{t / CYCLE * 100:.4f}%"
     eio, lin = "animation-timing-function:ease-in-out", "animation-timing-function:linear"
 
-    def frames(name, outer, dot):
-        kf = f"0%{{{outer};{eio}}}"
+    def frames(name, decl):
+        kf = f"0%{{{decl(0)};{eio}}}"
         if HOLD:
-            kf += f"{pc(INHALE)}{{{dot};{lin}}}{pc(INHALE + HOLD)}{{{dot};{eio}}}"
-        else:                                    # no hold: a single keyframe at the dot, the exhale easing starts there
-            kf += f"{pc(INHALE)}{{{dot};{eio}}}"
-        return f"@keyframes {name}{{{kf}100%{{{outer}}}}}"
-    off, on = f"stroke-dashoffset:{P:.2f}", f"stroke-dashoffset:{P - g['l_dot']:.2f}"
-    return "".join([frames("poff", off, on), frames("toff", off, on),
-                    frames("pop", "stroke-opacity:0", "stroke-opacity:1"), frames("top", "stroke-opacity:0", "stroke-opacity:.45"),
-                    frames("ptint", f"stroke:{INK}", "stroke:#FFC9B5"),
-                    frames("warm", "opacity:.22;transform:scale(1)", "opacity:.95;transform:scale(1.15)"),
-                    frames("ring", "opacity:0", "opacity:.5")]), P
+            kf += f"{pc(INHALE)}{{{decl(ld)};{lin}}}{pc(INHALE + HOLD)}{{{decl(ld)};{eio}}}"
+        else:                                    # no hold: one keyframe on the dot, the exhale easing starts there
+            kf += f"{pc(INHALE)}{{{decl(ld)};{eio}}}"
+        return f"@keyframes {name}{{{kf}100%{{{decl(L)}}}}}"
+    fade = (f"@keyframes fade{{0%{{stroke-opacity:0}}{pc(FADE_IN)}{{stroke-opacity:1}}{pc(CYCLE - FADE_OUT)}{{stroke-opacity:1}}100%{{stroke-opacity:0}}}}")
+    return frames("tdash", lambda h: f"stroke-dashoffset:{P - h:.2f}") + frames("hdash", lambda h: f"stroke-dashoffset:{eps - h:.2f}") + fade, P, eps
 
 
 def grp(name, parts):
@@ -409,23 +406,26 @@ def grp(name, parts):
 def p_banner(d, y, css):
     g = banner_geometry(d, y)
     cx, cy = g["dot"]
-    kf, P = breath_css(g)
+    kf, P, eps = breath_css(g)
     css.append(kf)
-    L = g["total"]
-    line = f'd="{g["d"]}" fill="none" stroke="{INK}" stroke-linecap="round" stroke-linejoin="round"'
-    name = clip(d["prof"]["name"].upper(), 12)
-    size = fit(name, 64, 400)
-    outline = f' stroke="{BG}" stroke-width="5" paint-order="stroke" stroke-linejoin="round"'
+    L = PL
+    line = f'd="{g["d"]}" pathLength="{PL}" fill="none" stroke="{INK}" stroke-linecap="round" stroke-linejoin="round"'
     out = [f'<path class="base" {line} stroke-width="2.8" opacity=".35"/>',
-           f'<path class="tail" {line} stroke-width="7" stroke-dasharray="{P:.1f} {2 * L:.0f}" stroke-dashoffset="{P:.1f}" stroke-opacity="0"/>',
-           f'<path class="pulse" {line} stroke-width="2.8" stroke-dasharray="{P:.1f} {2 * L:.0f}" stroke-dashoffset="{P:.1f}" stroke-opacity="0"/>',
-           f'<circle class="ring" cx="{cx:.1f}" cy="{cy}" r="30" fill="{RED}" opacity="0"/>',
-           f'<circle class="dotw" cx="{cx:.1f}" cy="{cy}" r="8" fill="{RED}" opacity=".22"/>',
-           disp(W / 2, round(cy + size * 0.37 - 4), name, size, INK, "middle", outline)]
-    if d["prof"].get("tagline"):
-        out.append(text(W / 2, y + BANNER_H - 8, d["prof"]["tagline"], 18, SEC, "middle", extra=outline.replace('stroke-width="5"', 'stroke-width="4"')))
-    out.append(note(M + 6, y + 26, "breathe"))
-    return [grp("banner", out)], BANNER_H
+           f'<circle class="dot" cx="{cx:.2f}" cy="{cy:.2f}" r="7" fill="{RED}"/>',
+           f'<path class="trace" {line} stroke-width="3.2" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
+           f'<path class="head" {line} stroke-width="9" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>']
+    name = clip(d["prof"]["name"].upper(), 12)
+    size = fit(name, 52, 300)
+    nw, tag = len(name) * 0.6 * size, d["prof"].get("tagline") or ""
+    tw = len(tag) * 9.6
+    show = bool(tag) and nw + 24 + tw <= W - 2 * MG       # the tagline sits on the name's line only when it fits
+    x0 = (W - (nw + 24 + tw if show else nw)) / 2
+    by = y + SPIRAL_TOP + 150 * SPIRAL_S + 12 + size * 0.74
+    out.append(disp(round(x0, 1), round(by, 1), name, size, INK, "start"))
+    if show:
+        out.append(text(round(x0 + nw + 24, 1), round(by, 1), tag, 18, SEC))
+    out.append(note(MG + 6, y + SPIRAL_TOP + 40, "breathe"))
+    return [grp("banner", out)], HEADER_H
 
 
 # ---- usage shape (daily tokens, time of day, weekday)
@@ -507,7 +507,8 @@ def daily_labels(vals, xcs, tops, peak, today):
 
 PANEL, PANEL_LINE = "#121211", "#33322E"
 MG, PAD, PG = 24, 12, 8       # canvas margin, panel padding, gap between panels
-HM, WH, LET_DY = 54, 84, 22   # daily bar max height, weekday bar max height, weekday-letter offset below a baseline
+HM, WH, LET_DY = 54, 84, 22
+COL_A, COL_B, COL_C = 330, 192, 244   # shared column grid: left edges of the right-hand panels line up in every row   # daily bar max height, weekday bar max height, weekday-letter offset below a baseline
 
 
 def panel(name, x, y, w, h, parts):
@@ -531,12 +532,12 @@ def sec_daily(d, x, y, w, css=None):
     for i, (v, xc) in enumerate(zip(vals, xcs)):
         out.append(tick(xc, base + 4, kid("dt") + i, 4))
         if v == 0:
-            out.append(f'<rect class="stub" x="{xc - 8.25:.2f}" y="{base - 6.75:.2f}" width="16.5" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>')
+            out.append(f'<rect class="stub" x="{xc - min(16, pitch - 6) / 2 + 0.75:.2f}" y="{base - 6.75:.2f}" width="{min(16, pitch - 6) - 1.5:.2f}" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>')
             continue
         h = max(1.5, HM * v / mx)
         tops[i] = base - h
         col = RED if i == peak else (DIM if v < 0.5 * avg else INK)
-        out.append(vbar(xc, 16, base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}"'))
+        out.append(vbar(xc, min(16, pitch - 6), base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}"'))
     for i, xc in enumerate(xcs):
         out.append(text(round(xc, 1), base + LET_DY, "MTWTFSS"[datetime.date.fromisoformat(days[i]["date"]).weekday()], 16, SEC, "middle"))
     ti = len(days) - 1
@@ -633,13 +634,13 @@ def sec_tokens(d, x, y, w, css):
     frac = total / goal if goal else 0
     out = [title(x, y + 16, "Tokens"), disp(x, y + 76, n(total), fit(n(total), 72, w))]
     by, bw = y + 92, w - 112
-    out.append(bar_row(x, x + bw, by + 6, 12, frac, INK, "goal", "goal"))
+    out.append(bar_row(x, x + bw, by + 6, 12, frac, RED, "goal", "goal"))
     fw = bw * min(frac, 1)
     if fw > 4:
         out += [f'<clipPath id="fc"><rect x="{x}" y="{by}" width="{fw:.2f}" height="12"/></clipPath>',
-                f'<g clip-path="url(#fc)"><g class="sweep"><rect x="{x - 60}" y="{by}" width="60" height="12" fill="{RED}" opacity=".15"/>'
-                f'<rect x="{x - 40}" y="{by}" width="40" height="12" fill="{RED}" opacity=".3"/>'
-                f'<rect x="{x - 20}" y="{by}" width="20" height="12" fill="{RED}" opacity=".6"/></g></g>']
+                f'<g clip-path="url(#fc)"><g class="sweep"><rect x="{x - 60}" y="{by}" width="60" height="12" fill="{INK}" opacity=".15"/>'
+                f'<rect x="{x - 40}" y="{by}" width="40" height="12" fill="{INK}" opacity=".3"/>'
+                f'<rect x="{x - 20}" y="{by}" width="20" height="12" fill="{INK}" opacity=".6"/></g></g>']
         css.append("@keyframes sweep{0%%{transform:translateX(0)}100%%{transform:translateX(%dpx)}}" % (fw + 60))
     out.append(f'<text x="{x + w}" y="{by + 14}" font-family="{SANS}" text-anchor="end"><tspan font-size="24" fill="{INK}">{frac * 100:.1f}%</tspan>'
                f'<tspan font-size="16" fill="{SEC}" dx="6">of {d["prof"]["goal_billions"]:g}B</tspan></text>')
@@ -652,19 +653,24 @@ def sec_models(d, x, y, w, css=None):
     out = [title(x, y + 16, "Models")]
     for i, (k, v) in enumerate(segs):
         yr = y + 30 + i * 22
-        out += [text(x, yr + 16, k, 18), bar_row(x + 70, x + w - 60, yr + 10, 10, pct[k] / 1000, SHADES[i], "m" + k, k),
+        out += [text(x, yr + 16, k, 18), bar_row(x + 70, x + w - 60, yr + 10, 10, pct[k] / 1000, RED, "m" + k, k),
                 text(x + w, yr + 16, f"{pct[k] / 10:.1f}%", 18, INK, "end")]
     return out, 30 + max(len(segs), 1) * 22
 
 
 # ---- activity, streak, languages, stack
 
+def fmt_mean(v):
+    return f"{v:.1f}" if v < 10 else f"{round(v)}"
+
+
 def sec_activity(d, x, y, w, css=None):
     vals, ma = d["last31"], d["ma"]
     mx = max(vals + [1])
     ch, base = 40, y + 100
     peak = vals.index(max(vals)) if max(vals) > 0 else None
-    pitch = w / 31
+    aw = w - 66
+    pitch = aw / 31
     out = [title(x, y + 16, "Activity"),
            f'<text x="{x + w}" y="{y + 38}" font-family="{SANS}" text-anchor="end"><tspan font-size="16" fill="{SEC}">total </tspan>'
            f'<tspan font-size="{d["num"]}" font-weight="500" fill="{INK}">{n(d["total"])}</tspan></text>']
@@ -678,6 +684,10 @@ def sec_activity(d, x, y, w, css=None):
         out.append(text(x + peak * pitch + pitch / 2, base - max(3, round(ch * vals[peak] / mx)) - 8, str(vals[peak]), 16, INK, "middle"))
     pts = " ".join(f"{x + i * pitch + pitch / 2:.1f},{base - ch * m / mx:.1f}" for i, m in enumerate(ma))
     out.append(f'<polyline points="{pts}" fill="none" stroke="{INK}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>')
+    mean = sum(vals) / len(vals)
+    ya = base - ch * mean / mx
+    out.append(f'<line class="avg2" x1="{x - 2}" y1="{ya:.2f}" x2="{x + aw + 4}" y2="{ya:.2f}" stroke="{SEC}" stroke-width="1.5" stroke-dasharray="7 6" '
+               f'stroke-linecap="round" data-avg="{mean:.3f}"/>' + text(x + aw + 10, round(ya + 5, 1), f"avg {fmt_mean(mean)}", 16, SEC, "start"))
     out.append(f'<line x1="{x}" y1="{base + 20}" x2="{x + 24}" y2="{base + 20}" stroke="{INK}" stroke-width="2" stroke-linecap="round"/>'
                + text(x + 34, base + 26, "7-day avg", 16, SEC))
     return out, 100 + 30
@@ -688,7 +698,7 @@ def sec_streak(d, x, y, w, css=None):
     for xx, v, lab, col in ((x, d["cur"], "now", RED if d["cur"] else INK), (x + 86, d["best"], "best", INK)):
         out += [num(xx, y + 54, str(v), d["num"], col), text(xx, y + 76, lab, 16, SEC)]
     if d["cur"] >= 3:
-        out += [note(x + 62, y + 24, "on a run", 20), arrow(x + 58, y + 28, x + 26, y + 36, kid("run"))]
+        out += [note(x + 66, y + 22, "on a run", 20), arrow(x + 62, y + 26, x + 30, y + 26, kid("run"))]
     return out, 82
 
 
@@ -700,7 +710,7 @@ def sec_langs(d, x, y, w, css=None):
         return out + [text(x, y + 52, "No language data", 18, SEC)], 60
     for i, (name, b_) in enumerate(langs):
         ry, p = y + 30 + i * 22, b_ / tot
-        out += [text(x, ry + 15, clip(name, 12), 18), bar_row(x + 128, x + w - 66, ry + 10, 10, p, INK if i == 0 else BAR, "l" + name, name),
+        out += [text(x, ry + 15, clip(name, 10), 18), bar_row(x + 104, x + w - 60, ry + 10, 10, p, RED, "l" + name, name),
                 text(x + w, ry + 15, f"{p * 100:.1f}%", 18, INK, "end")]
     return out, 30 + len(langs) * 22
 
@@ -708,20 +718,20 @@ def sec_langs(d, x, y, w, css=None):
 def sec_stack(d, x, y, w, css=None):
     tools = d["tools"]
     out = [title(x, y + 16, "Stack")]
-    per = max(1, int((w + 12) // 48))
+    per = max(1, min(len(tools), int((w - 36) // 42) + 1))
+    pitch = (w - 36) / (per - 1) if per > 1 else 0
     for i, t in enumerate(tools):
-        out.append(f'<g transform="translate({x + (i % per) * 48} {y + 30 + (i // per) * 44}) scale(1.5)">'
+        out.append(f'<g transform="translate({x + (i % per) * pitch:.1f} {y + 30 + (i // per) * 44}) scale(1.5)">'
                    f'<title>{escape(t["name"])}</title><path d="{d["icons"][t["icon"]]}" fill="{INK}"/></g>')
     return out, 30 + max(1, -(-len(tools) // per)) * 44 - 8
 
 
 ROWS = [  # (panel id, width or None for the remainder, section function)
-    [("tokens", 540, sec_tokens), ("models", None, sec_models)],
-    [("daily", 430, sec_daily), ("tod", 190, sec_tod), ("weekday", None, sec_weekday)],
-    [("activity", 440, sec_activity), ("langs", None, sec_langs)],
-    [("streak", 190, sec_streak), ("stack", None, sec_stack)],
+    [("tokens", COL_A + COL_B + PG, sec_tokens), ("models", None, sec_models)],
+    [("daily", COL_A, sec_daily), ("tod", COL_B, sec_tod), ("weekday", None, sec_weekday)],
+    [("activity", COL_A + COL_B + PG, sec_activity), ("langs", None, sec_langs)],
+    [("stack", COL_A + COL_B + PG, sec_stack), ("streak", None, sec_streak)],
 ]
-
 
 def p_grid(d, y0, css):
     """Rows of bordered panels; panels in a row share a height; a row is skipped when it has no content."""
@@ -748,10 +758,10 @@ def p_grid(d, y0, css):
 
 def build(d):
     # secondary numbers never exceed half the hero, even when a long token total shrinks the hero
-    d = {**d, "logo": read("logo.json"), "num": min(36, fit(n(d["tokens"]["total"]), 72, 540 - 2 * PAD) // 2)}
+    d = {**d, "logo": read("logo.json"), "num": min(36, fit(n(d["tokens"]["total"]), 72, COL_A + COL_B + PG - 2 * PAD) // 2)}
     css = []
     banner, _ = p_banner(d, 0, css)
-    grid, bottom = p_grid(d, BANNER_H + 2, css)
+    grid, bottom = p_grid(d, HEADER_H + 2, css)
     parts = banner + grid
     foot = bottom + 22
     parts.append(grp("footer", [text(MG + 2, foot, f"Updated {et_label(d['now'])}", 16, SEC)]))
@@ -762,13 +772,11 @@ def build(d):
         (f"@font-face{{font-family:PneuMono;font-weight:800;src:url(data:font/woff2;base64,{dfont}) format('woff2')}}" if dfont else "")
         + (f"@font-face{{font-family:Caveat;font-weight:400;src:url(data:font/woff2;base64,{nfont}) format('woff2')}}" if nfont else "")
         + "@keyframes breath-bar{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.04)}}"
-        f".dotw{{transform-box:fill-box;transform-origin:center;animation:warm {cyc} linear infinite}}"
-        f".ring{{animation:ring {cyc} linear infinite}}"
-        f".pulse{{animation:poff {cyc} linear infinite,pop {cyc} linear infinite,ptint {cyc} linear infinite}}"
-        f".tail{{animation:toff {cyc} linear infinite,top {cyc} linear infinite;animation-delay:.2s}}"
+        f".trace{{animation:tdash {cyc} linear infinite,fade {cyc} linear infinite}}"
+        f".head{{animation:hdash {cyc} linear infinite,fade {cyc} linear infinite}}"
         ".bar{transform-box:fill-box;transform-origin:50% 100%;animation:breath-bar 6s ease-in-out infinite}"
         ".sweep{animation:sweep 2.4s ease-in-out infinite}"
-        "@media (prefers-reduced-motion:reduce){.dotw,.ring,.bar{animation:none}.pulse,.tail,.sweep{display:none}.base{opacity:.7}.dotw{opacity:.8}.ring{opacity:.25}}")
+        "@media (prefers-reduced-motion:reduce){.bar{animation:none}.trace,.head,.sweep{display:none}.base{opacity:.7}}")
     desc = (f"{d['prof']['name']} GitHub profile card: {len(d['tools'])} tools, {n(d['total'])} contributions, "
             f"{d['cur']} day streak, {n(d['tokens']['total'])} tokens.")
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{height}" viewBox="0 0 {W} {height}" role="img" aria-label="{escape(desc)}">'

@@ -6,7 +6,7 @@ import json, pathlib, subprocess, sys, tempfile, time, urllib.request
 from websockets.sync.client import connect
 
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
-MAX_H, MIN_GAP, MAX_GAP, MIN_PAD = 760, 6, 14, 8
+MAX_H, MIN_GAP, MAX_GAP, MIN_PAD = 880, 6, 14, 8
 JS = """JSON.stringify((() => {
   const out = {panels: {}, canvas: [0, 0, +document.documentElement.getAttribute('width'), +document.documentElement.getAttribute('height')], banner: null};
   const box = e => {const b = e.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]};

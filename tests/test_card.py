@@ -1,6 +1,6 @@
 """python tests/test_card.py [--previews] : edge cases for scripts/build_card.py, no network.
 --previews also writes the edge-case SVGs to qc/ for rendering."""
-import datetime, json, pathlib, sys, tempfile
+import datetime, json, math, pathlib, sys, tempfile
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "tests"))
@@ -260,36 +260,54 @@ with tempfile.TemporaryDirectory() as tmp:
     d = data({day(0): 1}, {"Python": 1}, tmp)
     svg = b.build(d)
     root = ET.fromstring(svg)
-    paths = [e for e in root.iter(NS + "path") if e.get("class") in ("base", "pulse", "tail")]
-    assert len(paths) == 3 and len({e.get("d") for e in paths}) == 1 and paths[0].get("d").count("M") == 1
-    g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)
-    assert 0.3 < g["l_dot"] / g["total"] < 0.7 and g["samples"][0][0] < 300 and g["samples"][-1][0] > 580 and g["samples"][0][0] < g["dot"][0] < g["samples"][-1][0]
+    paths = [e for e in root.iter(NS + "path") if e.get("class") in ("base", "trace", "head")]
+    assert [e.get("class") for e in paths] == ["base", "trace", "head"] and len({e.get("d") for e in paths}) == 1 and paths[0].get("d").count("M") == 1
+    g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)                                    # one path, three strokes
+    cx, cy = g["dot"]
+    near = min(g["samples"], key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
+    assert g["samples"][0][0] < cx < g["samples"][-1][0] and abs(g["l_dot"] / g["total"] - 0.5) < 0.05   # left tip -> dot -> right tip
+    assert math.hypot(near[0] - cx, near[1] - cy) < 0.6 and abs(near[2] - g["l_dot"]) < 1.5           # the red dot sits on the path
     css = ET.fromstring(svg).find(NS + "style").text
     cyc = b.INHALE + b.HOLD + b.EXHALE
     assert b.CYCLE == cyc and f" {cyc}s " in css and "prefers-reduced-motion" in css                # cycle derived from the three constants
     pc = lambda t: f"{t / cyc * 100:.4f}%"
+    P, eps, L, ld = 0.16 * b.PL, 0.8, b.PL, b.PL * g["l_dot"] / g["total"]    # normalised pathLength units
 
-    def frames(name):
-        body = re.search(r"@keyframes " + name + r"\{(.*)", css).group(1)
-        body = body[:body.index("}}") + 2] if name else body
-        return re.findall(r"([\d.]+%)\{([^}]*)\}", body)
-    for name in ("poff", "pop", "warm"):
+    def frames(name, text_=css):
+        body = re.search(r"@keyframes " + name + r"\{(.*)", text_).group(1)
+        return re.findall(r"([\d.]+%)\{([^}]*)\}", body[:body.index("}}") + 2])
+    for name, off in (("tdash", P), ("hdash", eps)):
         k = frames(name)
-        assert [p_ for p_, _ in k] == ["0%", pc(b.INHALE), pc(b.INHALE + b.HOLD), "100%"], (name, k)     # 4 keyframes, percentages from the constants
-        assert k[0][1].split(";animation")[0] == k[3][1] and k[1][1].split(";animation")[0] == k[2][1].split(";animation")[0]   # loop seam and hold are identical
-        assert [x[1].split("animation-timing-function:")[1] if "timing" in x[1] else None for x in k] == ["ease-in-out", "linear", "ease-in-out", None]
+        assert [p_ for p_, _ in k] == ["0%", pc(b.INHALE), pc(b.INHALE + b.HOLD), "100%"], (name, k)  # percentages from the constants
+        offs = [float(re.search(r"stroke-dashoffset:(-?[\d.]+)", x).group(1)) for _, x in k]
+        assert abs(offs[0] - off) < 0.01 and abs(offs[1] - (off - ld)) < 0.01 and offs[1] == offs[2] and abs(offs[3] - (off - L)) < 0.01   # tip, dot, dot (hold), tip
+        assert [x.split("animation-timing-function:")[1] if "timing" in x else None for _, x in k] == ["ease-in-out", "linear", "ease-in-out", None]
+    ko = [float(re.search(r"stroke-dashoffset:(-?[\d.]+)", x).group(1)) for _, x in frames("hdash")]
+    kt = [float(re.search(r"stroke-dashoffset:(-?[\d.]+)", x).group(1)) for _, x in frames("tdash")]
+    assert all(abs((a - c) - (P - eps)) < 0.02 for a, c in zip(kt, ko))                              # head stays glued to the trace tip
+    fade = re.findall(r"([\d.]+%)\{stroke-opacity:([\d.]+)\}", re.search(r"@keyframes fade\{(.*?)\}\}", css).group(1) + "}")
+    assert fade[0] == ("0%", "0") and fade[-1] == ("100%", "0")                                       # seamless restart: faded out at both ends
     ti = b.INHALE
-    assert abs(b.head_at(g, 0)) < 1e-6 and abs(b.head_at(g, ti) - g["l_dot"]) < 1e-9 and abs(b.head_at(g, cyc - 1e-9)) < 1e-3
-    assert all(abs(b.head_at(g, ti + k * b.HOLD / 4) - g["l_dot"]) < 1e-9 for k in range(5))          # stationary for the whole hold
-    # HOLD = 0 drops the duplicate hold keyframe
-    old = (b.HOLD, b.CYCLE)
+    assert abs(b.head_at(g, 0)) < 1e-6 and abs(b.head_at(g, ti) - g["l_dot"]) < 1e-9 and abs(b.head_at(g, cyc - 1e-9) - g["total"]) < 1e-3
+    assert all(abs(b.head_at(g, ti + k_ * b.HOLD / 4) - g["l_dot"]) < 1e-9 for k_ in range(5))              # stationary on the dot for the whole hold
+    old = (b.HOLD, b.CYCLE)                                                                          # HOLD = 0 drops the duplicate hold keyframe
     b.HOLD, b.CYCLE = 0, b.INHALE + b.EXHALE
     try:
-        k0 = re.findall(r"([\d.]+%)\{([^}]*)\}", re.search(r"@keyframes poff\{(.*?)\}\}", b.breath_css(g)[0]).group(1) + "}")
+        k0 = frames("tdash", b.breath_css(g)[0])
         assert [p_ for p_, _ in k0] == ["0%", f"{b.INHALE / b.CYCLE * 100:.4f}%", "100%"], k0
     finally:
         b.HOLD, b.CYCLE = old
     # groups for the spacing QC exist
     ids = {e.get("id") for e in root.iter(NS + "g") if e.get("id")}
     assert {"sec-banner", "sec-tokens", "sec-daily", "sec-tod", "sec-weekday", "sec-activity", "sec-streak", "sec-langs", "sec-stack", "sec-footer"} <= ids
+    # activity average: dashed line at the mean of the 31 shown values, labelled "avg N"
+    d = data({day(0): 6, day(1): 2, day(2): 0, day(3): 16}, {"Python": 1}, tmp)
+    root = ET.fromstring(b.build(d))
+    line = [e for e in root.iter() if e.get("class") == "avg2"][0]
+    mean = sum(d["last31"]) / 31
+    assert abs(float(line.get("data-avg")) - mean) < 1e-3 and f"avg {b.fmt_mean(mean)}" in [t.text for t in root.iter(NS + "text")]
+    assert b.fmt_mean(7.456) == "7.5" and b.fmt_mean(14.4) == "14"
+    # every progress bar fill is the card's red; tracks stay dark grey
+    root = ET.fromstring(b.build(d))
+    assert all(e.get("fill") == b.RED for e in fills(root)) and all(e.get("fill") == b.TRACK for e in root.iter() if e.get("class") == "trk")
 print("all edge-case checks passed")
