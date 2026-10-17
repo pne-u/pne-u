@@ -321,7 +321,7 @@ with tempfile.TemporaryDirectory() as tmp:
     dot = [e for e in root.iter(NS + "circle") if e.get("class") == "dot"][0]
     dcx, dcy, r = float(dot.get("cx")), float(dot.get("cy")), float(dot.get("r"))
     assert abs((Nr + El) / 2 - b.W / 2) < 0.01 and abs(dcx - b.W / 2) < 0.01                       # gap axis = card centre = dot x
-    assert abs((dcx - r - Nr) - (El - (dcx + r))) < 0.01 and El - Nr >= 2 * r + 10                   # equal air on both sides of the dot
+    assert abs((dcx - r - Nr) - (El - (dcx + r))) < 0.01                   # equal air on both sides of the dot
     import re as _re
     ty, k = (lambda m_: (float(m_.group(1)), float(m_.group(2))))(_re.search(r"translate\([-\d.]+ ([-\d.]+)\) scale\(([\d.]+)", gl[0].get("transform")))
     assert abs((ty - 730 * k / 2) - dcy) < 0.05                                                      # dot y = middle of the capital letters

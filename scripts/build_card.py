@@ -297,7 +297,7 @@ SPIRAL_W = 700      # the traced spiral is stretched to span most of the header 
 SPIRAL_H = 110      # ...and fits a 100-120px band
 SPIRAL_CY = 62      # y of the spiral centre = the red dot = the middle of the capital letters
 HEADER_H = 134      # band height including the tagline
-DOT_R = 8           # radius of the red dot
+DOT_R = 7           # radius of the red dot
 TITLE_SIZE = 64     # title font size in px (the title is drawn from glyph outlines)
 PL = 1000           # pathLength of the spiral: dash values are in these units, so the head and trace land on the tips in any renderer
 
@@ -435,7 +435,7 @@ def p_banner(d, y, css):
     back = [f'<path class="base" {line} stroke="{INK}" stroke-width="2.8" opacity=".25"/>']
     name = clip(d["prof"]["name"].upper(), 12)
     gl = read("title-glyphs.json")
-    mid_gap = 2 * DOT_R + 12                 # ink gap between the two middle letters: the dot plus 6px of air on each side
+    mid_gap = 0                              # natural letter spacing: the title reads as one word, the dot sits on top of it
     title, size = [], TITLE_SIZE
     if all(c in gl["glyphs"] for c in name):
         _, _, width, _ = title_layout(name, size, mid_gap)
@@ -458,8 +458,8 @@ def p_banner(d, y, css):
     front = [f'<path class="traceout" {line} stroke="{BG}" stroke-width="6.8" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
              f'<path class="trace" {line} stroke="{INK}" stroke-width="3.2" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
              f'<circle class="dot" cx="{cx:.2f}" cy="{cy:.2f}" r="{DOT_R}" fill="{RED}"/>',
-             f'<path class="headout" {line} stroke="{BG}" stroke-width="10" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>',
-             f'<path class="head" {line} stroke="{INK}" stroke-width="7" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>']
+             f'<path class="headout" {line} stroke="{BG}" stroke-width="8.5" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>',
+             f'<path class="head" {line} stroke="{INK}" stroke-width="5.5" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>']
     return [grp("banner", back + title + front)], HEADER_H
 
 
