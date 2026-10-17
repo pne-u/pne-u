@@ -10,6 +10,7 @@ import datetime, glob, json, os, pathlib, re, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOME = os.path.expanduser("~")
 TOKENS = ROOT / "data" / "tokens.json"
+SHAPE = ROOT / "data" / "usage-shape.json"
 LOG = ROOT / "logs" / "token-sync.log"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 IDENTITY = ["-c", "user.name=Pneu", "-c", "user.email=238723547+pne-u@users.noreply.github.com"]  # GitHub noreply address, never a personal one
@@ -46,11 +47,12 @@ def claude():
             if ts:
                 first = min(first, ts)
             seen[(m.get("id"), d.get("requestId"), d.get("uuid") if not m.get("id") else None)] = (family(m.get("model")), sum(
-                u.get(k, 0) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")))
+                u.get(k, 0) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")),
+                d.get("timestamp") or "")
     fams = {}
-    for fam, tok in seen.values():
+    for fam, tok, _ in seen.values():
         fams[fam] = fams.get(fam, 0) + tok
-    return fams, first
+    return fams, first, [(ts, tok) for _, tok, ts in seen.values()]
 
 
 def codex():
@@ -76,13 +78,41 @@ def top_models(fams):
     return {**top, **({"Other": other} if other else {})}
 
 
+def et(dt):
+    """UTC datetime -> US Eastern wall clock (own DST rule, no tz database)."""
+    def nth_sunday(month, nth, hour):
+        d = datetime.datetime(dt.year, month, 1, hour, tzinfo=datetime.timezone.utc)
+        return d + datetime.timedelta(days=(6 - d.weekday()) % 7 + 7 * (nth - 1))
+    dst = nth_sunday(3, 2, 7) <= dt < nth_sunday(11, 1, 6)
+    return dt + datetime.timedelta(hours=-4 if dst else -5)
+
+
+def usage_shape(msgs, now=None):
+    """Tokens per ET day for the last 14 days; message counts per ET hour and per weekday (Mon..Sun) over 30 days.
+    msgs: the deduped (timestamp, tokens) pairs of the Claude scan."""
+    today = et(now or datetime.datetime.now(datetime.timezone.utc)).date()
+    days = {today - datetime.timedelta(days=i): 0 for i in range(13, -1, -1)}
+    hours, weekdays = [0] * 24, [0] * 7
+    for ts, tok in msgs:
+        try:
+            local = et(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")))
+        except ValueError:
+            continue
+        if local.date() in days:
+            days[local.date()] += tok
+        if 0 <= (today - local.date()).days < 30:
+            hours[local.hour] += 1
+            weekdays[local.weekday()] += 1
+    return {"today": str(today), "days": [{"date": str(k), "tokens": v} for k, v in days.items()], "hours": hours, "weekdays": weekdays}
+
+
 def compute():
-    fams, c_first = claude()
+    fams, c_first, msgs = claude()
     x, x_first = codex() if os.path.isdir(os.path.join(HOME, ".codex", "sessions")) else (0, "9999")
     c = sum(fams.values())
     if x:
         fams["Codex"] = x
-    return {"total": c + x, "claude": c, "codex": x, "since": min(c_first, x_first), "models": top_models(fams)}
+    return {"total": c + x, "claude": c, "codex": x, "since": min(c_first, x_first), "models": top_models(fams)}, usage_shape(msgs)
 
 
 def git(*args):
@@ -93,21 +123,22 @@ def git(*args):
     return done.stdout.strip()
 
 
-def write(out):
+def write(out, path=TOKENS):
     new = json.dumps(out, indent=1) + "\n"
-    if TOKENS.exists() and TOKENS.read_text(encoding="utf-8") == new:
+    if path.exists() and path.read_text(encoding="utf-8") == new:
         return False
-    TOKENS.write_text(new, encoding="utf-8", newline="\n")
+    path.write_text(new, encoding="utf-8", newline="\n")
     return True
 
 
 def sync():
     git("pull", "--rebase", "--autostash", "origin", "main")
-    out = compute()
-    if not write(out):
+    out, shape = compute()
+    changed = [write(out), write(shape, SHAPE)]
+    if not any(changed):
         log(f"unchanged total={out['total']}, no commit")
         return
-    git("add", "data/tokens.json")
+    git("add", "data/tokens.json", "data/usage-shape.json")
     git(*IDENTITY, "commit", "-m", f"Update token totals ({out['total']:,})")
     git("push", "origin", "HEAD:main")
     log(f"pushed {git('rev-parse', '--short', 'HEAD')} total={out['total']}")
@@ -115,9 +146,10 @@ def sync():
 
 def main():
     if "--push" not in sys.argv:
-        out = compute()
+        out, shape = compute()
         write(out)
-        print(out)
+        write(shape, SHAPE)
+        print(out, shape["today"], shape["weekdays"])
         return
     for attempt in (1, 2):
         try:
