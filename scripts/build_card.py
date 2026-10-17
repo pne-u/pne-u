@@ -574,6 +574,14 @@ def panel(name, x, y, w, h, parts):
     return grp(name, [f'<rect class="panel" x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{h:.1f}" rx="10" fill="{PANEL}" stroke="{PANEL_LINE}" stroke-width="1"/>'] + parts)
 
 
+Y_STEPS = [10e6, 20e6, 25e6, 50e6, 100e6, 200e6, 250e6, 500e6, 1e9, 2e9, 5e9]
+Y_MARGIN = 56   # left margin of the daily chart for the tick labels
+
+
+def y_tick(v):
+    return "0" if v == 0 else (f"{v / 1e9:g}B" if v >= 1e9 else f"{v / 1e6:g}M")
+
+
 def sec_daily(d, x, y, w, css=None):
     sh = d.get("shape")
     if not sh:
@@ -582,41 +590,48 @@ def sec_daily(d, x, y, w, css=None):
     vals = [v["tokens"] for v in days]
     mx, avg = max(vals + [0]), sum(vals) / max(len(vals), 1)
     peak = vals.index(mx) if mx > 0 else None
-    aw = w - 4
-    BW = 8   # bar width: narrow enough that a centred label clears the neighbouring bar
+    step = next((st for st in Y_STEPS if mx <= 4 * st), Y_STEPS[-1])   # smallest nice step giving <= 4 intervals above zero
+    top = max(1, math.ceil(mx / step)) * step                          # chart top: the max rounded up to the next tick
+    x0, aw, BW = x + Y_MARGIN, w - Y_MARGIN - 4, 8   # plot starts right of the tick-label margin; BW: narrow enough that a centred label clears its neighbour
     pitch = aw / len(vals)
-    base = y + 52 + HM   # 28px of headroom above the tallest bar below the title line (y + 16) plus room for its label
-    out = [title(x, y + 16, "Daily tokens, last 14 days"), wavy_line(x - 2, x + aw + 2, base, kid("dbase"))]
-    xcs = [x + pitch * (i + 0.5) for i in range(len(vals))]
+    base = y + 52 + HM   # 28px of headroom above the tallest possible bar below the title line (y + 16) plus room for its label
+    out = [title(x, y + 16, "Daily tokens, last 14 days")]
+    for k in range(int(top // step) + 1):   # tick label centred on its gridline; gridlines solid, 1px, 15%: unlike the dashed average
+        yt = base - HM * k * step / top
+        out.append(text(x + Y_MARGIN - 4, round(yt + 5.5, 1), y_tick(k * step), 16, "#CFCFCF", "end", extra=f' class="ytick" data-tick="{k * step}"'))
+        if k:
+            out.append(f'<line class="grid" x1="{x0 - 2}" y1="{yt:.2f}" x2="{x0 + aw + 2}" y2="{yt:.2f}" stroke="#FFFFFF" stroke-width="1" opacity="0.15" data-tick="{k * step}"/>')
+    out.append(wavy_line(x0 - 2, x0 + aw + 2, base, kid("dbase")))
+    xcs = [x0 + pitch * (i + 0.5) for i in range(len(vals))]
     tops = {}
     for i, (v, xc) in enumerate(zip(vals, xcs)):
         out.append(tick(xc, base + 4, kid("dt") + i, 4))
         if v == 0:
             out.append(f'<rect class="stub" x="{xc - BW / 2 + 0.75:.2f}" y="{base - 6.75:.2f}" width="{BW - 1.5:.2f}" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>')
             continue
-        h = max(1.5, HM * v / mx)
+        h = max(1.5, HM * v / top)
         tops[i] = base - h
         col = RED if i == peak else (DIM if v < 0.5 * avg else INK)
-        out.append(vbar(xc, BW, base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}"'))
+        out.append(vbar(xc, BW, base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}" data-top="{top}"'))
     for i, xc in enumerate(xcs):
         out.append(text(round(xc, 1), base + LET_DY, "MTWTFSS"[datetime.date.fromisoformat(days[i]["date"]).weekday()], AXIS_PX, SEC, "middle"))
     ti = len(days) - 1
     out.append(f'<circle class="today" cx="{xcs[ti]:.1f}" cy="{base + LET_DY + 14}" r="3.5" fill="{INK}"/>')
-    ya = base - HM * avg / mx if mx > 0 else base
-    bg = f' paint-order="stroke" stroke="#0A0A0A" stroke-width="5" stroke-linejoin="round"'   # cuts the dashed line behind label text
+    ya = base - HM * avg / top if mx > 0 else base
+    bg = f' paint-order="stroke" stroke="#0A0A0A" stroke-width="5" stroke-linejoin="round"'   # cuts gridlines/the dashed line behind label text
     dash = f'stroke="{SEC}" stroke-width="1" stroke-dasharray="3 5" opacity="0.4"'
-    out.append(f'<line class="avg" x1="{x - 2}" y1="{ya:.2f}" x2="{x + aw + 2}" y2="{ya:.2f}" {dash} data-avg="{avg:.3f}"/>')
+    out.append(f'<line class="avg" x1="{x0 - 2}" y1="{ya:.2f}" x2="{x0 + aw + 2}" y2="{ya:.2f}" {dash} data-avg="{avg:.3f}"/>')
     at = f"avg {short(avg)}"
     ax, tw = x + w, 9.2 * len(at)   # the average lives in the title row, right-aligned to the panel padding: dashed sample, then the text
     out.append(f'<line class="avgkey" x1="{ax - tw - 28:.1f}" y1="{y + 11:.1f}" x2="{ax - tw - 10:.1f}" y2="{y + 11:.1f}" {dash}/>' + text(round(ax, 1), y + 16, at, 16, SEC, "end"))
-    bw, placed = BW, {}
-    def fits(i):   # centred label box touches no placed label and no taller neighbouring bar
-        hw = label_w(short(vals[i])) / 2
-        return not any(abs(xcs[i] - xcs[k]) < hw + label_w(short(vals[k])) / 2 + 3 for k in placed) and             not any(j != i and tj < tops[i] - 6 and abs(xcs[j] - xcs[i]) < hw + bw / 2 + 1 for j, tj in tops.items())
-    for i in sorted(tops, key=lambda k: (k not in (peak, ti), -vals[k])):   # peak and today first (always shown), then the rest by size while they fit
-        if i in (peak, ti) or fits(i):
-            placed[i] = 1
-            out.append(text(round(xcs[i], 1), round(tops[i] - 6, 1), short(vals[i]), 16, RED if i == peak else SEC, "middle", extra=f' data-day="{i}"' + bg))
+    shown = [k for k in dict.fromkeys((peak, ti)) if k in tops]   # only the peak (red) and today; one label when today is the peak
+    for i in shown:
+        hw, lift = label_w(short(vals[i])) / 2, 0
+        if i != peak and peak in shown and abs(xcs[i] - xcs[peak]) < hw + label_w(short(vals[peak])) / 2 + 3:
+            lift = 18   # would overlap the peak's label horizontally
+        elif any(j != i and tj < tops[i] - 6 and abs(xcs[j] - xcs[i]) < hw + BW / 2 + 1 for j, tj in tops.items()):
+            lift = 18   # would land on a taller neighbouring bar
+        out.append(text(round(xcs[i], 1), round(tops[i] - 6 - lift, 1), short(vals[i]), 16, RED if i == peak else SEC, "middle", extra=f' data-day="{i}" data-lift="{lift}"' + bg))
     return out, LET_DY + 14 + 4 + (base - y)
 
 
