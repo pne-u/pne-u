@@ -26,12 +26,12 @@ def day(i):
     return str(NOW.date() - datetime.timedelta(days=i))
 
 
-def verify(name, d, tmp):
+def verify(name, d, tmp, max_height=qc_card.MAX_HEIGHT):
     """Build, run the readability/contrast rules on it, optionally keep it for rendering."""
     svg = b.build(d)
     p = pathlib.Path(tmp) / f"{name}.svg"
     p.write_text(svg, encoding="utf-8")
-    _, _, _, fails = qc_card.check(p)
+    _, _, _, fails = qc_card.check(p, max_height)
     assert not fails, (name, fails)
     if PREVIEWS:
         (ROOT / "qc").mkdir(exist_ok=True)
@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as tmp:
                    "models": {"Opus": 6_000_000_000, "Sonnet": 5_000_000_000, "Fable": 1_000_000_000, "Other": 345_678_901}}
     d["prof"] = dict(d["prof"], name="Pneu & <Co> Extraordinarily Long Display Name", tagline='say "hi" & <go>')
     d["tools"] = d["tools"] * 4
-    svg = verify("long", d, tmp)
+    svg = verify("long", d, tmp, max_height=None)  # 48 stack icons make this one legitimately tall
     assert "12,345,678,901" in svg and "123.5%" in svg
     # current streak colour: red only while the streak is active
     d = data({day(1): 2, day(0): 3}, {"Python": 1}, tmp)

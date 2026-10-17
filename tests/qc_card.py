@@ -4,7 +4,7 @@ no scripts, no external references, no '//' labels, no small all-caps labels, no
 import pathlib, re, sys
 import xml.etree.ElementTree as ET
 
-MIN_SIZE, MIN_CONTRAST, MAX_BYTES = 16, 7.0, 150_000
+MIN_SIZE, MIN_CONTRAST, MAX_BYTES, MAX_HEIGHT = 16, 7.0, 150_000, 720  # 720px leaves room for GitHub's header in a 1080p window
 NS = "{http://www.w3.org/2000/svg}"
 
 
@@ -20,10 +20,12 @@ def contrast(a, b):
     return (la + 0.05) / (lb + 0.05)
 
 
-def check(path):
+def check(path, max_height=MAX_HEIGHT):
     raw = pathlib.Path(path).read_bytes()
     fails, rows = [], []
     root = ET.fromstring(raw)  # raises if not well-formed
+    if max_height and float(root.get("height")) > max_height:
+        fails.append(f"height {root.get('height')} > {max_height}")
     if len(raw) >= MAX_BYTES:
         fails.append(f"size {len(raw):,} >= {MAX_BYTES:,}")
     src = raw.decode("utf-8")

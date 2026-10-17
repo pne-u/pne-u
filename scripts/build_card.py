@@ -130,14 +130,15 @@ def fetch_icons():
 
 # ---------------------------------------------------------------- drawing
 
-W, M = 880, 48
-IW = W - 2 * M
+W, M = 880, 40
 BG, WHITE, SEC, BAR, TRACK, EMPTY, RED = "#0A0A0A", "#FFFFFF", "#CFCFCF", "#A8A8A8", "#262626", "#3A3A3A", "#FF6F61"
 SANS = "system-ui,'Segoe UI',Helvetica,Arial,sans-serif"
 DISP = "PneuMono,'JetBrains Mono',ui-monospace,Consolas,monospace"
 SEG = ["#FFFFFF", "#BDBDBD", "#7C7C7C", "#4C4C4C"]  # token-model segments, decorative
 SPAN = 140  # width of the token-bar sweep highlight
-GAP = 56  # whitespace between sections
+GAP = 18  # whitespace between rows
+LEFT_W = 520  # left column of the two-column rows; the right column starts at RX
+RX = 580
 
 
 def n(v):
@@ -161,8 +162,8 @@ def fit(s, size, max_w):
     return min(size, int(max_w / (0.6 * max(len(s), 1))))  # monospace advance is 0.6 em
 
 
-def title(y, name, meta=""):
-    return text(M, y, name, 22, WHITE, weight="700") + (text(W - M, y, meta, 16, SEC, "end") if meta else "")
+def title(x, y, name, meta="", right=0):
+    return text(x, y, name, 22, WHITE, weight="700") + (text(right, y, meta, 16, SEC, "end") if meta else "")
 
 
 def et_label(now):
@@ -180,84 +181,26 @@ def banner(d, cy):
     The strokes keep a constant width (non-scaling-stroke); the red dot and its glow stay round and sit where the arms cross."""
     lg = d["logo"]
     dx, dy, r = lg["dot"]
-    sx, sy = 2.55, 1.3
+    sx, sy = 2.55, 0.56
     tx, ty = W / 2 - dx * sx, cy - dy * sy
-    return (f'<g transform="translate({tx:.1f} {ty:.1f}) scale({sx} {sy})" fill="none" stroke-width="4" '
+    return (f'<g transform="translate({tx:.1f} {ty:.1f}) scale({sx} {sy})" fill="none" stroke-width="3.5" '
             f'stroke-linecap="round" stroke-linejoin="round" opacity=".62">'
             f'<path vector-effect="non-scaling-stroke" d="{lg["left"]}" stroke="url(#gl)"/>'
             f'<path vector-effect="non-scaling-stroke" d="{lg["right"]}" stroke="url(#gr)"/></g>'
-            f'<g class="glow"><circle cx="{W / 2}" cy="{cy}" r="56" fill="{RED}" fill-opacity=".08"/>'
-            f'<circle cx="{W / 2}" cy="{cy}" r="36" fill="{RED}" fill-opacity=".2"/></g>'
-            f'<circle class="dot" cx="{W / 2}" cy="{cy}" r="13" fill="{RED}"/>')
+            f'<g class="glow"><circle cx="{W / 2}" cy="{cy}" r="44" fill="{RED}" fill-opacity=".08"/>'
+            f'<circle cx="{W / 2}" cy="{cy}" r="28" fill="{RED}" fill-opacity=".2"/></g>'
+            f'<circle class="dot" cx="{W / 2}" cy="{cy}" r="10" fill="{RED}"/>')
 
 
 def p_header(d, y):
     prof = d["prof"]
-    name = clip(prof["name"].upper(), (W - 2 * M - 80) * 10 // 240)  # at most this many chars so the name stays 40px or larger
-    size = fit(name, 104, W - 2 * M - 80)
-    cy, half, base = y + 126, len(name) // 2, y + 126 + int(size * 0.37)
-    return [banner(d, cy), disp(W / 2 - 44, base, name[:half], size, WHITE, "end"),  # the name opens around the red dot
-            disp(W / 2 + 44, base, name[half:], size, WHITE, "start"),
-            text(W / 2, y + 262, prof["tagline"], 20, SEC, "middle")], 282
-
-
-def p_stack(d, y):
-    tools, pitch = d["tools"], 56
-    per_row = (IW + 20) // pitch
-    rows = max(1, -(-len(tools) // per_row))
-    out = [title(y + 22, "Stack", f"{len(tools)} tools")]
-    for i, t in enumerate(tools):
-        out.append(f'<g transform="translate({M + (i % per_row) * pitch} {y + 58 + (i // per_row) * pitch}) scale(1.5)">'
-                   f'<title>{escape(t["name"])}</title><path d="{d["icons"][t["icon"]]}" fill="{WHITE}"/></g>')
-    return out, 58 + rows * pitch - 20
-
-
-def p_contrib(d, y):
-    vals, ma, dates = d["last31"], d["ma"], d["dates"]
-    mx = max(vals + [1])
-    ch, base = 120, y + 190
-    peak = vals.index(max(vals)) if max(vals) > 0 else None
-    pitch = IW / 31
-    out = [title(y + 22, "Contributions", f"{n(sum(vals))} in 31 days, {dates[0]:%b} {dates[0].day} to {dates[-1]:%b} {dates[-1].day}")]
-    for i, v in enumerate(vals):
-        x = M + i * pitch + (pitch - 8) / 2
-        if v == 0:
-            out.append(f'<rect x="{x:.1f}" y="{base - 2}" width="8" height="2" rx="1" fill="{EMPTY}"/>')
-        else:
-            bh = max(6, round(ch * v / mx))
-            out.append(f'<rect class="bar" x="{x:.1f}" y="{base - bh}" width="8" height="{bh}" rx="4" '
-                       f'fill="{RED if i == peak else BAR}" style="animation-delay:{i * 0.08:.2f}s"/>')
-    if peak is not None:
-        out.append(text(M + peak * pitch + pitch / 2, base - round(ch * vals[peak] / mx) - 10, str(vals[peak]), 16, WHITE, "middle", "700"))
-    pts = " ".join(f"{M + i * pitch + pitch / 2:.1f},{base - ch * m / mx:.1f}" for i, m in enumerate(ma))
-    out.append(f'<polyline points="{pts}" fill="none" stroke="{WHITE}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>')
-    out.append(f'<line x1="{M}" y1="{base + 30}" x2="{M + 28}" y2="{base + 30}" stroke="{WHITE}" stroke-width="2" stroke-linecap="round"/>'
-               + text(M + 40, base + 36, "7-day average", 16, SEC))
-    return out, 232
-
-
-def p_totals(d, y):
-    out = [title(y + 22, "Totals", "all time")]
-    cols = [(M, n(d["total"]), "contributions", WHITE), (M + 300, str(d["cur"]), "day streak", RED if d["cur"] else WHITE),
-            (M + 560, str(d["best"]), "best streak", WHITE)]
-    for x, v, lab, col in cols:
-        out += [disp(x, y + 108, v, fit(v, 72, 250), col), text(x, y + 142, lab, 18, SEC)]
-    return out, 150
-
-
-def p_langs(d, y):
-    langs = sorted(d["langs"].items(), key=lambda kv: -kv[1])[:6]
-    tot = sum(d["langs"].values())
-    out = [title(y + 22, "Languages", "by bytes")]
-    if not langs or not tot:
-        return out + [text(M, y + 74, "No language data", 18, SEC)], 90
-    bx, bw = M + 190, IW - 190 - 90
-    for i, (name, b) in enumerate(langs):
-        ry, pct = y + 58 + i * 40, b / tot
-        out += [text(M, ry + 14, clip(name, 15), 18), f'<rect x="{bx}" y="{ry + 3}" width="{bw}" height="10" rx="5" fill="{TRACK}"/>',
-                f'<rect x="{bx}" y="{ry + 3}" width="{max(10, round(bw * pct))}" height="10" rx="5" fill="{WHITE if i == 0 else BAR}"/>',
-                text(W - M, ry + 14, f"{pct * 100:.1f}%", 18, WHITE, "end")]
-    return out, 58 + len(langs) * 40 - 14
+    name = clip(prof["name"].upper(), (W - 2 * M - 60) * 10 // 240)  # at most this many chars so the name stays 40px or larger
+    size = fit(name, 60, W - 2 * M - 60)
+    cy, half = y + 62, len(name) // 2
+    base = cy + int(size * 0.37)
+    return [banner(d, cy), disp(W / 2 - 30, base, name[:half], size, WHITE, "end"),  # the name opens around the red dot
+            disp(W / 2 + 30, base, name[half:], size, WHITE, "start"),
+            text(W / 2, y + 124, prof["tagline"], 18, SEC, "middle")], 134
 
 
 def shares(models):
@@ -278,27 +221,85 @@ def p_tokens(d, y, css):
     total = tk["total"]
     frac = min(1, total / goal) if goal else 0
     pct = f"{total / goal * 100:.1f}%" if goal else "0.0%"
-    out = [title(y + 22, "Token spend", f"since {since:%b %Y}"), disp(M, y + 134, n(total), fit(n(total), 96, IW)),
-           disp(M, y + 212, pct, 56), text(M + len(pct) * 33.6 + 16, y + 212, f"of the {d['prof']['goal_billions']:g}B goal", 18, SEC)]
-    by = y + 238
-    fw = max(14, round(IW * frac)) if frac else 0
-    out.append(f'<rect x="{M}" y="{by}" width="{IW}" height="14" rx="7" fill="{TRACK}"/>')
+    iw = W - 2 * M
+    out = [title(M, y + 20, "Token spend", f"since {since:%b %Y}", W - M), disp(M, y + 76, n(total), fit(n(total), 56, 520)),
+           disp(W - M, y + 66, pct, 44, WHITE, "end"), text(W - M, y + 88, f"of the {d['prof']['goal_billions']:g}B goal", 16, SEC, "end")]
+    by = y + 100
+    fw = max(12, round(iw * frac)) if frac else 0
+    out.append(f'<rect x="{M}" y="{by}" width="{iw}" height="12" rx="6" fill="{TRACK}"/>')
     if fw:
-        out += [f'<clipPath id="fc"><rect x="{M}" y="{by}" width="{fw}" height="14" rx="7"/></clipPath>',
-                f'<rect class="fill" x="{M}" y="{by}" width="{fw}" height="14" rx="7" fill="{WHITE}"/>',
-                f'<g clip-path="url(#fc)"><rect class="sweep" x="{M - SPAN}" y="{by}" width="{SPAN}" height="14" fill="url(#sw)"/></g>']
+        out += [f'<clipPath id="fc"><rect x="{M}" y="{by}" width="{fw}" height="12" rx="6"/></clipPath>',
+                f'<rect class="fill" x="{M}" y="{by}" width="{fw}" height="12" rx="6" fill="{WHITE}"/>',
+                f'<g clip-path="url(#fc)"><rect class="sweep" x="{M - SPAN}" y="{by}" width="{SPAN}" height="12" fill="url(#sw)"/></g>']
         css.append("@keyframes sweep{0%%{transform:translateX(0)}100%%{transform:translateX(%dpx)}}" % (fw + SPAN))
     models = tk.get("models") or {}
     sh = shares(models)
     if sh:
-        sy, x = by + 36, M
+        sy, x = by + 24, M
         for i, (k, v) in enumerate(models.items()):
-            w = max(6, (IW - 4 * (len(models) - 1)) * v / total)
-            out.append(f'<rect x="{x:.1f}" y="{sy}" width="{w:.1f}" height="6" rx="3" fill="{SEG[min(i, 3)]}"/>')
+            w = max(6, (iw - 4 * (len(models) - 1)) * v / total)
+            out.append(f'<rect x="{x:.1f}" y="{sy}" width="{w:.1f}" height="5" rx="2.5" fill="{SEG[min(i, 3)]}"/>')
             x += w + 4
         labels = "".join(f'<tspan dx="{0 if i == 0 else 28}">{escape(k)} {sh[k]}%</tspan>' for i, k in enumerate(models))
-        out.append(f'<text x="{M}" y="{sy + 36}" font-family="{SANS}" font-size="16" fill="{SEC}">{labels}</text>')
-    return out, 354
+        out.append(f'<text x="{M}" y="{sy + 26}" font-family="{SANS}" font-size="16" fill="{SEC}">{labels}</text>')
+    return out, 154
+
+
+def p_contrib(d, y):
+    """Left: 31-day bars with the 7-day average. Right: totals and streaks."""
+    vals, ma, dates = d["last31"], d["ma"], d["dates"]
+    mx = max(vals + [1])
+    ch, base = 70, y + 118
+    peak = vals.index(max(vals)) if max(vals) > 0 else None
+    pitch = LEFT_W / 31
+    out = [title(M, y + 20, "Contributions", f"{n(sum(vals))} in 31 days", M + LEFT_W)]
+    for i, v in enumerate(vals):
+        x = M + i * pitch + (pitch - 6) / 2
+        if v == 0:
+            out.append(f'<rect x="{x:.1f}" y="{base - 2}" width="6" height="2" rx="1" fill="{EMPTY}"/>')
+        else:
+            bh = max(5, round(ch * v / mx))
+            out.append(f'<rect class="bar" x="{x:.1f}" y="{base - bh}" width="6" height="{bh}" rx="3" '
+                       f'fill="{RED if i == peak else BAR}" style="animation-delay:{i * 0.08:.2f}s"/>')
+    if peak is not None:
+        out.append(text(M + peak * pitch + pitch / 2, base - round(ch * vals[peak] / mx) - 8, str(vals[peak]), 16, WHITE, "middle", "700"))
+    pts = " ".join(f"{M + i * pitch + pitch / 2:.1f},{base - ch * m / mx:.1f}" for i, m in enumerate(ma))
+    out.append(f'<polyline points="{pts}" fill="none" stroke="{WHITE}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>')
+    out.append(f'<line x1="{M}" y1="{base + 28}" x2="{M + 24}" y2="{base + 28}" stroke="{WHITE}" stroke-width="2" stroke-linecap="round"/>'
+               + text(M + 34, base + 33, "7-day average", 16, SEC)
+               + text(M + LEFT_W, base + 33, f"{dates[0]:%b} {dates[0].day} to {dates[-1]:%b} {dates[-1].day}", 16, SEC, "end"))
+    out.append(title(RX, y + 20, "Totals", "all time", W - M))
+    rows = [(n(d["total"]), "contributions", WHITE), (str(d["cur"]), "day streak", RED if d["cur"] else WHITE),
+            (str(d["best"]), "best streak", WHITE)]
+    for i, (v, lab, col) in enumerate(rows):
+        size = fit(v, 32, 130)
+        out += [disp(RX, y + 66 + i * 38, v, size, col), text(RX + len(v) * size * 0.6 + 12, y + 66 + i * 38, lab, 16, SEC)]
+    return out, 158
+
+
+def p_langs_stack(d, y):
+    """Left: top languages by bytes. Right: tool icons in a small grid."""
+    langs = sorted(d["langs"].items(), key=lambda kv: -kv[1])[:5]
+    tot = sum(d["langs"].values())
+    out = [title(M, y + 20, "Languages", "by bytes", M + LEFT_W)]
+    lang_h = 40
+    if not langs or not tot:
+        out.append(text(M, y + 58, "No language data", 18, SEC))
+    else:
+        bx, bw = M + 150, 280
+        for i, (name, b) in enumerate(langs):
+            ry, pct = y + 38 + i * 26, b / tot
+            out += [text(M, ry + 14, clip(name, 14), 18), f'<rect x="{bx}" y="{ry + 4}" width="{bw}" height="10" rx="5" fill="{TRACK}"/>',
+                    f'<rect x="{bx}" y="{ry + 4}" width="{max(10, round(bw * pct))}" height="10" rx="5" fill="{WHITE if i == 0 else BAR}"/>',
+                    text(M + LEFT_W, ry + 14, f"{pct * 100:.1f}%", 18, WHITE, "end")]
+        lang_h = 38 + len(langs) * 26
+    tools = d["tools"]
+    out.append(title(RX, y + 20, "Stack", f"{len(tools)} tools", W - M))
+    for i, t in enumerate(tools):
+        out.append(f'<g transform="translate({RX + (i % 4) * 64} {y + 42 + (i // 4) * 44}) scale(1.5)">'
+                   f'<title>{escape(t["name"])}</title><path d="{d["icons"][t["icon"]]}" fill="{WHITE}"/></g>')
+    stack_h = 42 + max(1, -(-len(tools) // 4)) * 44 - 8
+    return out, max(lang_h, stack_h)
 
 
 def font_b64():
@@ -310,13 +311,13 @@ def build(d):
     d = {**d, "logo": read("logo.json")}
     css = []
     parts, y = [], 0
-    for fn in (p_header, p_tokens, p_contrib, p_totals, p_langs, p_stack):  # usage first, tools last
+    for fn in (p_header, p_tokens, p_contrib, p_langs_stack):  # usage first, tools last
         out, h = fn(d, y, css) if fn is p_tokens else fn(d, y)
         parts += out
         y += h + GAP
-    foot = y - GAP + 56
+    foot = y - GAP + 32
     parts.append(text(M, foot, f"Updated {et_label(d['now'])}", 16, SEC))
-    height = foot + 48
+    height = foot + 16
     font = font_b64()
     static = (
         (f"@font-face{{font-family:PneuMono;font-weight:800;src:url(data:font/woff2;base64,{font}) format('woff2')}}" if font else "")
