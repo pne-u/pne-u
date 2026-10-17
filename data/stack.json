@@ -1,0 +1,18 @@
+{
+  "tools": [
+    {"name": "TypeScript", "icon": "typescript"},
+    {"name": "JavaScript", "icon": "javascript"},
+    {"name": "Python", "icon": "python"},
+    {"name": "React", "icon": "react"},
+    {"name": "Next.js", "icon": "nextdotjs"},
+    {"name": "Tailwind CSS", "icon": "tailwindcss"},
+    {"name": "Supabase", "icon": "supabase"},
+    {"name": "PostgreSQL", "icon": "postgresql"},
+    {"name": "Vercel", "icon": "vercel"},
+    {"name": "Vitest", "icon": "vitest"},
+    {"name": "Playwright", "icon": "playwright"},
+    {"name": "Claude Code", "icon": "claude"},
+    {"name": "Cursor", "icon": "cursor"},
+    {"name": "Obsidian", "icon": "obsidian"}
+  ]
+}
