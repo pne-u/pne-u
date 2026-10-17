@@ -137,6 +137,7 @@ SANS = "system-ui,'Segoe UI',Helvetica,Arial,sans-serif"
 DISP = "PneuMono,'JetBrains Mono',ui-monospace,Consolas,monospace"
 SEG = ["#FFFFFF", "#BDBDBD", "#7C7C7C", "#4C4C4C"]  # token-model segments, decorative
 SPAN = 140  # width of the token-bar sweep highlight
+GAP = 56  # whitespace between sections
 
 
 def n(v):
@@ -174,24 +175,30 @@ def et_label(now):
     return f"{local:%b} {local.day}, {local.hour % 12 or 12}:{local:%M} {'AM' if local.hour < 12 else 'PM'} {'EDT' if dst else 'EST'}"
 
 
-def logo(x, y, scale, d):
-    """Traced logo (data/logo.json): two gradient spiral arms and a separate red dot with two glow rings."""
+def banner(d, cy):
+    """The traced double spiral (data/logo.json) stretched across the card as a dim backdrop, centred on cy.
+    The strokes keep a constant width (non-scaling-stroke); the red dot and its glow stay round and sit where the arms cross."""
     lg = d["logo"]
-    cx, cy, r = lg["dot"]
-    tx, ty = x - 80 * scale, y - 155 * scale
-    return (f'<g transform="translate({tx:.2f} {ty:.2f}) scale({scale})">'
-            f'<g class="glow"><circle cx="{cx}" cy="{cy}" r="34" fill="{RED}" fill-opacity=".10"/>'
-            f'<circle cx="{cx}" cy="{cy}" r="22" fill="{RED}" fill-opacity=".22"/></g>'
-            f'<g fill="none" stroke-width="{lg["stroke"]}" stroke-linecap="round" stroke-linejoin="round">'
-            f'<path d="{lg["left"]}" stroke="url(#gl)"/><path d="{lg["right"]}" stroke="url(#gr)"/></g>'
-            f'<circle class="dot" cx="{cx}" cy="{cy}" r="{r}" fill="{RED}"/></g>')
+    dx, dy, r = lg["dot"]
+    sx, sy = 2.55, 1.3
+    tx, ty = W / 2 - dx * sx, cy - dy * sy
+    return (f'<g transform="translate({tx:.1f} {ty:.1f}) scale({sx} {sy})" fill="none" stroke-width="4" '
+            f'stroke-linecap="round" stroke-linejoin="round" opacity=".62">'
+            f'<path vector-effect="non-scaling-stroke" d="{lg["left"]}" stroke="url(#gl)"/>'
+            f'<path vector-effect="non-scaling-stroke" d="{lg["right"]}" stroke="url(#gr)"/></g>'
+            f'<g class="glow"><circle cx="{W / 2}" cy="{cy}" r="56" fill="{RED}" fill-opacity=".08"/>'
+            f'<circle cx="{W / 2}" cy="{cy}" r="36" fill="{RED}" fill-opacity=".2"/></g>'
+            f'<circle class="dot" cx="{W / 2}" cy="{cy}" r="13" fill="{RED}"/>')
 
 
 def p_header(d, y):
     prof = d["prof"]
-    name = clip(prof["name"].upper(), (W - M - 270) * 10 // 240)  # at most this many chars so the name stays 40px or larger
-    return [logo(M, y + 64, 0.625, d), disp(270, y + 140, name, fit(name, 104, W - M - 270)),
-            text(270, y + 184, prof["tagline"], 20, SEC)], 232
+    name = clip(prof["name"].upper(), (W - 2 * M - 80) * 10 // 240)  # at most this many chars so the name stays 40px or larger
+    size = fit(name, 104, W - 2 * M - 80)
+    cy, half, base = y + 126, len(name) // 2, y + 126 + int(size * 0.37)
+    return [banner(d, cy), disp(W / 2 - 44, base, name[:half], size, WHITE, "end"),  # the name opens around the red dot
+            disp(W / 2 + 44, base, name[half:], size, WHITE, "start"),
+            text(W / 2, y + 262, prof["tagline"], 20, SEC, "middle")], 282
 
 
 def p_stack(d, y):
@@ -303,11 +310,11 @@ def build(d):
     d = {**d, "logo": read("logo.json")}
     css = []
     parts, y = [], 0
-    for fn in (p_header, p_stack, p_contrib, p_totals, p_langs, p_tokens):
+    for fn in (p_header, p_tokens, p_contrib, p_totals, p_langs, p_stack):  # usage first, tools last
         out, h = fn(d, y, css) if fn is p_tokens else fn(d, y)
         parts += out
-        y += h + 72
-    foot = y - 72 + 56
+        y += h + GAP
+    foot = y - GAP + 56
     parts.append(text(M, foot, f"Updated {et_label(d['now'])}", 16, SEC))
     height = foot + 48
     font = font_b64()
