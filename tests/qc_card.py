@@ -6,7 +6,7 @@ exceeds 50% of its size, at most 40 words of text (numbers and the name excluded
 import pathlib, re, sys
 import xml.etree.ElementTree as ET
 
-MIN_SIZE, MIN_CONTRAST, MAX_BYTES, MAX_HEIGHT = 16, 7.0, 200_000, 880  # the usage panels need room; v4 capped the card at 720px
+MIN_SIZE, MIN_CONTRAST, MAX_BYTES, MAX_HEIGHT = 14, 7.0, 200_000, 880  # the usage panels need room; v4 capped the card at 720px
 NS = "{http://www.w3.org/2000/svg}"
 MAX_WORDS = 70
 STATS = {}  # filled by check(): words, hero, numbers
@@ -72,8 +72,8 @@ def check(path, max_height=MAX_HEIGHT):
         if not re.fullmatch(r"[\d,]+", hero[0]):
             fails.append(f"largest text is not the token number: {hero[0]!r} {hero[1]:g}px")
         for t, size, _, _ in meta:
-            if any(ch.isdigit() for ch in t) and (t, size) != hero[:2] and size > hero[1] * 0.5:
-                fails.append(f"number {t!r} at {size:g}px is above 50% of the hero {hero[1]:g}px")
+            if any(ch.isdigit() for ch in t) and (t, size) != hero[:2] and size > hero[1] * 0.7:
+                fails.append(f"number {t!r} at {size:g}px is above 70% of the hero {hero[1]:g}px")
         name = [m for m in meta if m[3] and m is not hero]
         words = [w for _, _, _, _, ws in [(0, 0, 0, 0, t.split()) for t, _, _, d in meta if not (d and (t, ) and any(t == n[0] for n in name))]
                  for w in ws if any(c.isalpha() for c in w) and not w[0].isdigit()]

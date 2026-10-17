@@ -432,7 +432,7 @@ def p_banner(d, y, css):
     css.append(kf)
     L = PL
     line = f'd="{g["d"]}" pathLength="{PL}" fill="none" stroke-linecap="round" stroke-linejoin="round"'
-    back = [f'<path class="base" {line} stroke="{INK}" stroke-width="2.8" opacity=".25"/>']
+    back = [f'<path class="base" {line} stroke="{INK}" stroke-width="2.8" opacity=".18"/>']
     name = clip(d["prof"]["name"].upper(), 12)
     gl = read("title-glyphs.json")
     mid_gap = 0                              # natural letter spacing: the title reads as one word, the dot sits on top of it
@@ -543,6 +543,8 @@ def daily_labels(vals, xcs, tops, peak, today):
 PANEL, PANEL_LINE = "#121211", "#33322E"
 MG, PAD, PG = 24, 12, 8       # canvas margin, panel padding, gap between panels
 HM, WH, LET_DY = 54, 84, 22
+HERO = 43      # token hero size: clearly under the 64px title, still the largest stat
+AXIS_PX = 14   # axis letters and ticks (weekday letters, hour ticks): small enough that neighbours never touch
 COL_A, COL_B, COL_C = 330, 192, 244   # shared column grid: left edges of the right-hand panels line up in every row   # daily bar max height, weekday bar max height, weekday-letter offset below a baseline
 
 
@@ -574,7 +576,7 @@ def sec_daily(d, x, y, w, css=None):
         col = RED if i == peak else (DIM if v < 0.5 * avg else INK)
         out.append(vbar(xc, min(16, pitch - 6), base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}"'))
     for i, xc in enumerate(xcs):
-        out.append(text(round(xc, 1), base + LET_DY, "MTWTFSS"[datetime.date.fromisoformat(days[i]["date"]).weekday()], 16, SEC, "middle"))
+        out.append(text(round(xc, 1), base + LET_DY, "MTWTFSS"[datetime.date.fromisoformat(days[i]["date"]).weekday()], AXIS_PX, SEC, "middle"))
     ti = len(days) - 1
     out.append(f'<circle class="today" cx="{xcs[ti]:.1f}" cy="{base + LET_DY + 14}" r="3.5" fill="{INK}"/>')
     ya = base - HM * avg / mx if mx > 0 else base
@@ -599,7 +601,7 @@ def sec_tod(d, x, y, w, css=None):
         out.append(f'<rect class="cell" x="{x + h_ * cp:.2f}" y="{y + 30 + wob(kid("tc"), h_) * 0.6:.2f}" width="{cp - 2:.2f}" height="48" rx="2" fill="{c}" data-h="{h_}" data-n="{hours[h_]}"/>')
     for h_, lab in ((0, "12a"), (6, "6a"), (12, "12p"), (18, "6p")):
         xt = x + h_ * cp + (cp - 2) / 2
-        out += [tick(xt, y + 82, kid("th") + h_, 5), text(round(x if h_ == 0 else xt, 1), y + 106, lab, 16, SEC, "start" if h_ == 0 else "middle")]
+        out += [tick(xt, y + 82, kid("th") + h_, 5), text(round(x if h_ == 0 else xt, 1), y + 106, lab, AXIS_PX, SEC, "start" if h_ == 0 else "middle")]
     if hp is not None:
         xp = min(max(x + hp * cp + cp / 2, x + 34), x + w - 34)
         out.append(text(round(xp, 1), y + 130, f"peak {hp % 12 or 12}{'a' if hp < 12 else 'p'}", 16, INK, "middle"))
@@ -621,7 +623,7 @@ def sec_weekday(d, x, y, w, css=None):
         h = max(1.5, WH * v / mw) if v > 0 and mw > 0 else 0
         out += [vbar(xc, 16, wb - h, wb, col, kid("wd") + i, "wbar", f' data-v="{v}" data-h="{h:.3f}"') if h else
                 f'<rect class="stub" x="{xc - 8.25:.2f}" y="{wb - 6.75:.2f}" width="16.5" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>',
-                text(round(xc, 1), wb + LET_DY, "MTWTFSS"[i], 16, SEC, "middle")]
+                text(round(xc, 1), wb + LET_DY, "MTWTFSS"[i], AXIS_PX, SEC, "middle")]
     out.append(wavy_line(x - 2, x + w + 2, wb, kid("wbase")))
     return out, 30 + WH + LET_DY + 4
 
@@ -663,12 +665,17 @@ def bar_row(x0, x1, yc, h, frac, shade, key, label):
             hbar(x0, x0 + (x1 - x0) * min(max(frac, 0), 1), yc, h, shade, kid(key + "f"), "fil", attrs))
 
 
-def sec_tokens(d, x, y, w, css):
+def sec_tokens(d, x, y, w, css, h=None):
     tk, goal = d["tokens"], d["prof"]["goal_billions"] * 1e9
     total = tk["total"]
     frac = total / goal if goal else 0
-    out = [title(x, y + 16, "Tokens"), disp(x, y + 76, n(total), fit(n(total), 72, w))]
-    by, bw = y + 92, w - 112
+    hs = fit(n(total), HERO, w)
+    cap = 0.73 * hs                                  # digit height
+    block = cap + 16 + 12                            # number + gap + progress bar
+    H = max(h or 0, 30 + block + 12)
+    base_y = y + max(30, (H - block) / 2) + cap      # the number and the bar are centred together in the card, below the title
+    out = [title(x, y + 16, "Tokens"), disp(x, round(base_y, 1), n(total), hs)]
+    by, bw = round(base_y + 16, 1), w - 112
     out.append(bar_row(x, x + bw, by + 6, 12, frac, RED, "goal", "goal"))
     fw = bw * min(frac, 1)
     if fw > 4:
@@ -679,7 +686,7 @@ def sec_tokens(d, x, y, w, css):
         css.append("@keyframes sweep{0%%{transform:translateX(0)}100%%{transform:translateX(%dpx)}}" % (fw + 60))
     out.append(f'<text x="{x + w}" y="{by + 14}" font-family="{SANS}" text-anchor="end"><tspan font-size="24" fill="{INK}">{frac * 100:.1f}%</tspan>'
                f'<tspan font-size="16" fill="{SEC}" dx="6">of {d["prof"]["goal_billions"]:g}B</tspan></text>')
-    return out, 112
+    return out, H
 
 
 def sec_models(d, x, y, w, css=None):
@@ -708,7 +715,7 @@ def sec_activity(d, x, y, w, css=None):
     pitch = aw / 31
     out = [title(x, y + 16, "Activity"),
            f'<text x="{x + w}" y="{y + 38}" font-family="{SANS}" text-anchor="end"><tspan font-size="16" fill="{SEC}">total </tspan>'
-           f'<tspan font-size="{d["num"]}" font-weight="500" fill="{INK}">{n(d["total"])}</tspan></text>']
+           f'<tspan font-size="{d["num_total"]}" font-weight="500" fill="{INK}">{n(d["total"])}</tspan></text>']
     for i, v in enumerate(vals):
         xc = x + i * pitch + pitch / 2
         if v == 0:
@@ -731,7 +738,7 @@ def sec_activity(d, x, y, w, css=None):
 def sec_streak(d, x, y, w, css=None):
     out = [title(x, y + 16, "Streak")]
     for xx, v, lab, col in ((x, d["cur"], "now", RED if d["cur"] else INK), (x + 86, d["best"], "best", INK)):
-        out += [num(xx, y + 54, str(v), d["num"], col), text(xx, y + 76, lab, 16, SEC)]
+        out += [num(xx, y + 54, str(v), d["num_streak"], col), text(xx, y + 76, lab, 16, SEC)]
     if d["cur"] >= 3:
         out += [note(x + 66, y + 22, "on a run", 20), arrow(x + 62, y + 26, x + 30, y + 26, kid("run"))]
     return out, 82
@@ -778,13 +785,15 @@ def p_grid(d, y0, css):
         built = []
         x = MG
         for (name, _, fn), w in zip(row, widths):
-            parts, h = fn(d, x + PAD, y + PAD, w - 2 * PAD, css)
-            built.append((name, x, w, parts, h))
+            parts, h = fn(d, x + PAD, y + PAD, w - 2 * PAD, [] if fn is sec_tokens else css)
+            built.append((name, x, w, parts, h, fn))
             x += w + PG
         if not any(b_[4] for b_ in built):
             continue
         rh = max(b_[4] for b_ in built) + 2 * PAD
-        for name, px, w, parts, h in built:
+        for name, px, w, parts, h, fn in built:
+            if fn is sec_tokens:                     # second pass: centre its content in the final card height (keyframes added once)
+                parts, h = fn(d, px + PAD, y + PAD, w - 2 * PAD, css, rh - 2 * PAD)
             if h:
                 out.append(panel(name, px, y, w, rh, parts))
         y += rh + PG
@@ -793,7 +802,8 @@ def p_grid(d, y0, css):
 
 def build(d):
     # secondary numbers never exceed half the hero, even when a long token total shrinks the hero
-    d = {**d, "logo": read("logo.json"), "num": min(36, fit(n(d["tokens"]["total"]), 72, COL_A + COL_B + PG - 2 * PAD) // 2)}
+    d = {**d, "logo": read("logo.json"), "num_total": max(16, round(fit(n(d["tokens"]["total"]), HERO, COL_A + COL_B + PG - 2 * PAD) * 0.67)),
+         "num_streak": max(16, round(fit(n(d["tokens"]["total"]), HERO, COL_A + COL_B + PG - 2 * PAD) * 0.6))}
     css = []
     banner, _ = p_banner(d, 0, css)
     grid, bottom = p_grid(d, HEADER_H + 2, css)
