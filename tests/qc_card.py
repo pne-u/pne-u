@@ -6,9 +6,9 @@ exceeds 50% of its size, at most 40 words of text (numbers and the name excluded
 import pathlib, re, sys
 import xml.etree.ElementTree as ET
 
-MIN_SIZE, MIN_CONTRAST, MAX_BYTES, MAX_HEIGHT = 16, 7.0, 150_000, 720  # 720px leaves room for GitHub's header in a 1080p window
+MIN_SIZE, MIN_CONTRAST, MAX_BYTES, MAX_HEIGHT = 16, 7.0, 200_000, 1200  # the usage panels need room; v4 capped the card at 720px
 NS = "{http://www.w3.org/2000/svg}"
-MAX_WORDS = 40
+MAX_WORDS = 70
 STATS = {}  # filled by check(): words, hero, numbers
 
 

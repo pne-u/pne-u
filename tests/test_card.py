@@ -82,9 +82,34 @@ with tempfile.TemporaryDirectory() as tmp:
     assert d["cur"] == 0 and b.build(d).count("#FF6F61") < live.count("#FF6F61")
 
 
-# ---- model bar: segment widths equal shares, labels sit under their own segment, no overlaps
+# ---- model rows, goal and language bars: fill length is exactly pct/100 of the track
+import re
 import xml.etree.ElementTree as ET
+import scan_tokens as sc
 NS = "{http://www.w3.org/2000/svg}"
+
+
+def extent(el):
+    """(start, end) x of a bar element: rect attributes, or the path's extreme points plus the cap radius."""
+    if el.tag == NS + "rect":
+        return float(el.get("x")), float(el.get("x")) + float(el.get("width"))
+    d = el.get("d")
+    xs = [float(m.group(1)) for m in re.finditer(r"(-?\d+\.?\d*) -?\d+\.?\d*", re.sub(r"A\d+\.?\d* \d+\.?\d* 0 0 1", "", d))]
+    r = float(re.search(r"A(\d+\.?\d*)", d).group(1))
+    return min(xs) - r, max(xs) + r
+
+
+def ys(el):
+    if el.tag == NS + "rect":
+        return [float(el.get("y")), float(el.get("y")) + float(el.get("height"))]
+    d = re.sub(r"A\d+\.?\d* \d+\.?\d* 0 0 1", "", el.get("d"))
+    return [float(m.group(1)) for m in re.finditer(r"-?\d+\.?\d* (-?\d+\.?\d*)", d)]
+
+
+def fills(root):
+    return [e for e in root.iter() if e.get("class") == "fil"]
+
+
 CASES = {
     "one family at 100%": {"Opus": 5_000},
     "two families": {"Opus": 700, "Sonnet": 300},
@@ -92,7 +117,6 @@ CASES = {
     "six families": {"Opus": 300, "Sonnet": 250, "Fable": 200, "Haiku": 150, "Codex": 60, "Gemini": 40},
     "small families fold into Other": {"Opus": 900, "Sonnet": 60, "Fable": 20, "Haiku": 20},
     "Other under 2% is not drawn": {"Opus": 600, "Sonnet": 395, "Other": 5},
-    "tiny segments stagger labels": {"Opus": 880, "Sonnet": 40, "Fable": 35, "Haiku": 25, "Other": 20},
 }
 with tempfile.TemporaryDirectory() as tmp:
     for name, models in CASES.items():
@@ -101,35 +125,109 @@ with tempfile.TemporaryDirectory() as tmp:
         svg = b.build(d)
         root = ET.fromstring(svg)
         segs = b.model_segments(models)
-        names = [k for k, _ in segs]
-        rects = [r for r in root.iter(NS + "rect") if r.get("class") == "mseg"]
-        assert [r.get("data-name") for r in rects] == names, (name, names)
-        assert all(r.get("height") == "20" for r in rects) and len(rects) <= 5
-        avail = b.IW - 2 * (len(rects) - 1)
-        drawn = sum(v for _, v in segs)
-        for r, (k, v) in zip(rects, segs):
-            assert abs(float(r.get("width")) - avail * v / drawn) < 0.01, (name, k)          # width == share
-        pcts = b.shares(dict(segs))
-        assert sum(pcts.values()) == 100, name
-        assert names == sorted(names[:-1] if names[-1] == "Other" else names, key=lambda k: -dict(segs)[k]) + (["Other"] if names[-1] == "Other" else []), name
-        assert all(v / sum(models.values()) >= 0.03 for k, v in segs if k != "Other"), name  # nothing under 3% is drawn
-        # labels: left-aligned at their own segment, same row never overlap
-        labels = {t.text: (float(t.get("x")), float(t.get("y")), t.get("text-anchor")) for t in root.iter(NS + "text")}
-        placed = []
-        for r, (k, v) in zip(rects, segs):
-            lab = f"{k} {pcts[k]}%"
-            x, y, anchor = labels[lab]
-            if anchor == "start":
-                assert abs(x - float(r.get("x"))) < 0.01, (name, lab)  # sits at its own segment start
-            else:  # only a segment starting too far right may right-align; the label must still sit under it
-                seg_lo, seg_hi = float(r.get("x")), float(r.get("x")) + float(r.get("width"))
-                assert x - len(lab) * b.LABEL_W <= seg_hi and x >= seg_lo, (name, lab)
-            lo = x if anchor == "start" else x - len(lab) * b.LABEL_W
-            placed.append((y, lo, lo + len(lab) * b.LABEL_W))
-        for i, (y1, a1, b1) in enumerate(placed):
-            for y2, a2, b2 in placed[i + 1:]:
-                assert y1 != y2 or b1 + 4 <= a2 or b2 + 4 <= a1, (name, "labels overlap")
-        _, _, _, fails = qc_card.check(pathlib.Path(tmp) / "x.svg", None) if (pathlib.Path(tmp) / "x.svg").write_text(svg, encoding="utf-8") else (0, 0, 0, [])
-        assert not fails, (name, fails)
-    assert b.model_segments({}) == [] and b.model_segments({"Other": 0}) == []
+        pct = b.shares(dict(segs), 1000)
+        assert sum(pct.values()) == 1000, name                                     # shares sum to 100.0%
+        rows = [e for e in fills(root) if e.get("data-label") in [k for k, _ in segs]]
+        assert [e.get("data-label") for e in rows] == [k for k, _ in segs], (name, "row order/names")
+        named = [k for k, _ in segs if k != "Other"]
+        assert named == sorted(named, key=lambda k: -dict(segs)[k]) and len(named) <= 4, name
+        assert all(v / sum(models.values()) >= 0.03 for k, v in segs if k != "Other"), name
+        for e, (k, v) in zip(rows, segs):
+            t0, t1 = float(e.get("data-t0")), float(e.get("data-t1"))
+            a, z = extent(e)
+            assert abs(a - t0) < 0.01 and abs((z - a) - (t1 - t0) * pct[k] / 1000) < 0.01, (name, k, z - a)   # fill == pct of the track
+        assert f"{pct[segs[0][0]] / 10:.1f}%" in svg, name
+        p = pathlib.Path(tmp) / "x.svg"
+        p.write_text(svg, encoding="utf-8")
+        assert not qc_card.check(p, None)[3], name
+    # goal bar and language bars use the same exact rule
+    d = data({day(0): 1}, {"Python": 30, "Go": 12, "C": 1}, tmp)
+    root = ET.fromstring(b.build(d))
+    for e in fills(root):
+        t0, t1, pc = float(e.get("data-t0")), float(e.get("data-t1")), float(e.get("data-pct"))
+        a, z = extent(e)
+        assert abs(a - t0) < 0.01 and abs((z - a) - (t1 - t0) * min(pc, 100) / 100) < 0.01, (e.get("data-label"), z - a)
+    assert {e.get("data-label") for e in fills(root)} >= {"goal", "Python", "Go", "C"}
+
+    # ---- scanner: usage shape in ET, same dedupe input
+    now = datetime.datetime(2026, 10, 17, 2, 0, tzinfo=datetime.timezone.utc)        # Oct 16, 10pm ET
+    sh = sc.usage_shape([("2026-10-17T01:30:00Z", 100), ("2026-10-16T14:00:00Z", 50), ("2026-09-10T12:00:00Z", 7), ("bad", 1)], now)
+    assert sh["today"] == "2026-10-16" and len(sh["days"]) == 14 and sh["days"][-1] == {"date": "2026-10-16", "tokens": 150}
+    assert sh["hours"][21] == 1 and sh["hours"][10] == 1 and sum(sh["hours"]) == 2   # 9:30pm and 10am ET; Sep 10 is outside 30 days
+    assert sh["weekdays"][4] == 2 and sum(sh["weekdays"]) == 2                         # both Fridays in ET
+
+    # ---- panels: heights, average line, dim/hollow, peaks, letters, against the JSON
+    def shape(daily, hours, wk, today="2026-10-16"):
+        t = datetime.date.fromisoformat(today)
+        return {"today": today, "days": [{"date": str(t - datetime.timedelta(days=13 - i)), "tokens": v} for i, v in enumerate(daily)],
+                "hours": hours, "weekdays": wk}
+
+    SAMPLES = {
+        "zero days": shape([0, 0, 500, 900, 0, 120, 1000, 0, 0, 400, 800, 0, 300, 1000], [0] * 8 + [3, 9, 4, 0, 0, 0, 0, 0, 0, 0, 0, 12, 2, 1, 0, 0], [5, 9, 4, 8, 7, 0, 3]),
+        "ties": shape([100, 100, 40, 100, 40, 100, 100, 100, 100, 100, 100, 100, 100, 100], [5] * 24, [7, 7, 7, 7, 7, 7, 7]),
+        "single-day spike": shape([0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 90_000, 0, 0], [0] * 20 + [8, 0, 0, 0], [0, 0, 0, 0, 40, 0, 0]),
+        "all zero": shape([0] * 14, [0] * 24, [0] * 7),
+    }
+    for name, sh in SAMPLES.items():
+        d = data({day(0): 1}, {"Python": 1}, tmp)
+        d["shape"] = sh
+        svg = b.build(d)
+        root = ET.fromstring(svg)
+        vals = [x["tokens"] for x in sh["days"]]
+        mx, avg = max(vals), sum(vals) / 14
+        bars = [e for e in root.iter() if e.get("class") == "dbar"]
+        nz = [(i, v) for i, v in enumerate(vals) if v]
+        stubs = [e for e in root.iter() if e.get("class") == "stub"]
+        wk = sh["weekdays"]
+        assert len(bars) == len(nz), name
+        assert len(stubs) == (14 - len(nz)) + sum(1 for v in wk if v == 0 or max(wk) == 0), name   # hollow stubs: zero days and zero weekdays
+        base = float(bars[0].get("data-base")) if bars else None
+        peak = vals.index(mx) if mx else None                                        # ties: the first of the maxima
+        for e, (i, v) in zip(bars, nz):
+            h = max(1.5, 110 * v / mx)
+            y = ys(e)
+            assert abs(min(y) - (base - h)) < 0.01 and abs(max(y) - base) < 0.01 and abs(float(e.get("data-h")) - h) < 0.01, (name, i)
+            want = b.RED if i == peak else (b.DIM if v < 0.5 * avg else b.INK)
+            assert e.get("fill") == want, (name, i, e.get("fill"), want)
+        line = [e for e in root.iter() if e.get("class") == "avg"][0]
+        assert abs(float(line.get("data-avg")) - avg) < 0.001
+        texts = list(root.iter(NS + "text"))
+        if mx:
+            assert abs(float(line.get("y1")) - (base - 110 * avg / mx)) < 0.01, name
+            assert sum(1 for e in bars if e.get("fill") == b.RED) == 1 and "peak" in [t.text for t in texts], name
+            letters = [t.text for t in texts if abs(float(t.get("y")) - (base + 28)) < 0.01]
+            assert "".join(letters) == "".join("MTWTFSS"[datetime.date.fromisoformat(x["date"]).weekday()] for x in sh["days"]), (name, letters)
+        else:
+            assert "peak" not in [t.text for t in texts], name
+        # time of day: peak cell red, label from data
+        hrs = sh["hours"]
+        reds = [int(e.get("data-h")) for e in root.iter() if e.get("class") == "cell" and e.get("fill") == b.RED]
+        if max(hrs):
+            hp = hrs.index(max(hrs))
+            assert reds == [hp], (name, reds)
+            assert f"peak {hp % 12 or 12}{'a' if hp < 12 else 'p'}" in [t.text for t in texts], name
+        else:
+            assert not reds and not [t.text for t in texts if (t.text or "").startswith("peak ")], name
+        # weekday bars: heights, best brightest, weakest dimmer
+        for e in [e for e in root.iter() if e.get("class") == "wbar"]:
+            v, h = int(e.get("data-v")), float(e.get("data-h"))
+            assert abs(h - max(1.5, 56 * v / max(wk))) < 0.01 and abs((max(ys(e)) - min(ys(e))) - h) < 0.01, name
+            if v == min(wk) and max(wk) != min(wk):
+                assert e.get("fill") == b.DIM, name
+        best = [e for e in root.iter() if e.get("class") == "wbar" and e.get("fill") == b.INK]
+        assert (not max(wk) and not best) or (len(best) == 1 and int(best[0].get("data-v")) == max(wk)), name
+        p = pathlib.Path(tmp) / "s.svg"
+        p.write_text(svg, encoding="utf-8")
+        assert not qc_card.check(p, None)[3], name
+        if PREVIEWS:
+            (ROOT / "qc" / f"shape-{name.replace(' ', '-')}.svg").write_text(svg, encoding="utf-8")
+
+    # ---- handwritten notes: "on a run" only for streaks of 3 or more; wobble is deterministic
+    d = data({day(2): 1, day(1): 1, day(0): 1}, {"Python": 1}, tmp)
+    assert d["cur"] == 3 and "on a run" in b.build(d)
+    d = data({day(1): 1, day(0): 0}, {"Python": 1}, tmp)
+    assert d["cur"] == 1 and "on a run" not in b.build(d)
+    d1, d2 = data({day(0): 5}, {"Python": 1}, tmp), data({day(0): 5}, {"Python": 1}, tmp)
+    assert b.build(d1) == b.build(d2)                                                  # byte-identical rebuilds
+    assert b.wob(1, 2, 3) == b.wob(1, 2, 3) and abs(b.wob(7)) <= 1
 print("all edge-case checks passed")
