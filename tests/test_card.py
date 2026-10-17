@@ -184,7 +184,9 @@ with tempfile.TemporaryDirectory() as tmp:
         base = float(bars[0].get("data-base")) if bars else None
         peak = vals.index(mx) if mx else None                                        # ties: the first of the maxima
         for e, (i, v) in zip(bars, nz):
-            h = max(1.5, b.HM * v / mx)
+            top = float(e.get("data-top"))
+            assert top >= mx and top / 1e0 % 1 == 0 and any(abs(top % st) < 1e-6 for st in b.Y_STEPS), name   # chart top: the max rounded up to a nice tick
+            h = max(1.5, b.HM * v / top)
             y = ys(e)
             assert abs(min(y) - (base - h)) < 0.01 and abs(max(y) - base) < 0.01 and abs(float(e.get("data-h")) - h) < 0.01, (name, i)
             want = b.RED if i == peak else (b.DIM if v < 0.5 * avg else b.INK)
@@ -193,7 +195,7 @@ with tempfile.TemporaryDirectory() as tmp:
         assert abs(float(line.get("data-avg")) - avg) < 0.001
         texts = list(root.iter(NS + "text"))
         if mx:
-            assert abs(float(line.get("y1")) - (base - b.HM * avg / mx)) < 0.01, name
+            assert abs(float(line.get("y1")) - (base - b.HM * avg / top)) < 0.01, name
             assert sum(1 for e in bars if e.get("fill") == b.RED) == 1, name
             assert f"avg {b.short(avg)}" in [t.text for t in texts], name             # the average line carries its value
             letters = [t.text for t in texts if abs(float(t.get("y")) - (base + b.LET_DY)) < 0.01 and len(t.text or "") == 1]
