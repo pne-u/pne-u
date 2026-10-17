@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
-"""Draws assets/card.svg from data/*.json, the GitHub contribution calendar and language bytes.
+"""Draws assets/card.svg ("breath" design) from data/*.json, the GitHub contribution calendar and language bytes.
 
   python scripts/build_card.py                 online: gh api (GH_TOKEN or a logged-in gh)
   python scripts/build_card.py --offline DIR   DIR/contributions.json + DIR/languages.json, no network
   python scripts/build_card.py --fetch-icons   cache simple-icons paths into data/icons.json
 
 Stdlib only. The SVG has no scripts, no external requests, no web fonts: a monospace system stack and
-inlined icon paths. It paints its own black background, so it reads the same in light and dark mode.
-data/sites.json is optional: create it ([{"site": "...", "kind": "..."}]) to bring the Shipped panel back.
+inlined icon paths, one OFL display font subset (data/display-font.b64). Own #0A0A0A background, so it reads the
+same in light and dark mode. Motion is CSS inside the SVG and is off under prefers-reduced-motion.
 """
 import argparse, datetime, json, pathlib, subprocess, urllib.error, urllib.request
 from xml.sax.saxutils import escape
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-W, PAD = 855, 26
-BG, LINE, TEXT, MUTED, BAR = "#000000", "#2a2a2a", "#ffffff", "#8a8a8a", "#555555"
-MONO = "ui-monospace,'SFMono-Regular',Consolas,Menlo,'Liberation Mono',monospace"
 ICON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@13.21.0/icons/{}.svg"
-MAX_SITE = 24  # characters before a site name is cut with an ellipsis
 
 
 # ---------------------------------------------------------------- data
@@ -80,6 +76,15 @@ def streaks(days, today):
     return cur, best
 
 
+def ma7(days, dates):
+    """7-day moving average ending on each date; days the calendar lacks are skipped (partial window)."""
+    out = []
+    for d in dates:
+        win = [days[str(d - datetime.timedelta(days=k))] for k in range(7) if str(d - datetime.timedelta(days=k)) in days]
+        out.append(sum(win) / len(win) if win else 0.0)
+    return out
+
+
 def read(name, default=None):
     p = ROOT / "data" / name
     if not p.exists() and default is not None:
@@ -102,8 +107,9 @@ def gather(offline=None, now=None):
     last31 = [days.get(str(today - datetime.timedelta(days=i)), 0) for i in range(30, -1, -1)]
     icons = read("icons.json", {})
     tools = [t for t in read("stack.json")["tools"] if t.get("icon") in icons]  # no icon, no slot
-    return {"prof": prof, "tools": tools, "sites": read("sites.json", []), "tokens": read("tokens.json"),
-            "icons": icons, "langs": langs, "days": days, "last31": last31, "total": sum(days.values()),
+    dates = [today - datetime.timedelta(days=i) for i in range(30, -1, -1)]
+    return {"prof": prof, "tools": tools, "tokens": read("tokens.json"), "icons": icons, "langs": langs, "days": days,
+            "dates": dates, "last31": last31, "ma": ma7(days, dates), "total": sum(days.values()),
             "cur": cur, "best": best, "now": now}
 
 
@@ -120,7 +126,18 @@ def fetch_icons():
     print("cached", len(out), "icons; no icon for:", skipped or "none")
 
 
+
+
 # ---------------------------------------------------------------- drawing
+
+W, M = 880, 48
+IW = W - 2 * M
+BG, WHITE, SEC, BAR, TRACK, EMPTY, RED = "#0A0A0A", "#FFFFFF", "#CFCFCF", "#A8A8A8", "#262626", "#3A3A3A", "#FF6F61"
+SANS = "system-ui,'Segoe UI',Helvetica,Arial,sans-serif"
+DISP = "PneuMono,'JetBrains Mono',ui-monospace,Consolas,monospace"
+SEG = ["#FFFFFF", "#BDBDBD", "#7C7C7C", "#4C4C4C"]  # token-model segments, decorative
+SPAN = 140  # width of the token-bar sweep highlight
+
 
 def n(v):
     return f"{v:,}"
@@ -130,145 +147,194 @@ def clip(s, k):
     return s if len(s) <= k else s[:k - 1] + "…"
 
 
-def text(x, y, s, size, fill=TEXT, anchor="start", weight="400", ls=0):
-    extra = f' letter-spacing="{ls}"' if ls else ""
-    return (f'<text x="{x}" y="{y}" font-family="{MONO}" font-size="{size}" font-weight="{weight}" fill="{fill}" '
-            f'text-anchor="{anchor}"{extra}>{escape(s)}</text>')
+def text(x, y, s, size, fill=WHITE, anchor="start", weight="400", font=SANS):
+    return (f'<text x="{x}" y="{y}" font-family="{font}" font-size="{size}" font-weight="{weight}" fill="{fill}" '
+            f'text-anchor="{anchor}">{escape(s)}</text>')
 
 
-def label(x, y, title, sub=""):
-    head = f"> {title.upper()}"
-    out = text(x, y, head, 13, TEXT, weight="700", ls=1)
-    if sub:
-        out += text(x + len(head) * 9 + 12, y, "// " + sub.upper(), 10, MUTED, ls=1)
-    return out
+def disp(x, y, s, size, fill=WHITE, anchor="start"):
+    return text(x, y, s, size, fill, anchor, "800", DISP)
 
 
-def hline(y):
-    return f'<line x1="0" y1="{y}" x2="{W}" y2="{y}" stroke="{LINE}"/>'
+def fit(s, size, max_w):
+    return min(size, int(max_w / (0.6 * max(len(s), 1))))  # monospace advance is 0.6 em
 
 
-def vline(x, y1, y2):
-    return f'<line x1="{x}" y1="{y1}" x2="{x}" y2="{y2}" stroke="{LINE}"/>'
+def title(y, name, meta=""):
+    return text(M, y, name, 22, WHITE, weight="700") + (text(W - M, y, meta, 16, SEC, "end") if meta else "")
 
 
-def track(x, y, w, frac, h=8):
-    return (f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="{h / 2}" fill="{LINE}"/>'
-            f'<rect x="{x}" y="{y}" width="{max(h, round(w * frac)) if frac else 0}" height="{h}" rx="{h / 2}" fill="{TEXT}"/>')
+def et_label(now):
+    """US Eastern, e.g. 'Oct 16, 9:31 PM EDT'. Own DST rule so no tz database is needed."""
+    def nth_sunday(year, month, nth, hour):
+        d = datetime.datetime(year, month, 1, hour, tzinfo=datetime.timezone.utc)
+        return d + datetime.timedelta(days=(6 - d.weekday()) % 7 + 7 * (nth - 1))
+    dst = nth_sunday(now.year, 3, 2, 7) <= now < nth_sunday(now.year, 11, 1, 6)
+    local = now + datetime.timedelta(hours=-4 if dst else -5)
+    return f"{local:%b} {local.day}, {local.hour % 12 or 12}:{local:%M} {'AM' if local.hour < 12 else 'PM'} {'EDT' if dst else 'EST'}"
+
+
+def logo(x, y, scale, d):
+    """Traced logo (data/logo.json): two gradient spiral arms and a separate red dot with two glow rings."""
+    lg = d["logo"]
+    cx, cy, r = lg["dot"]
+    tx, ty = x - 80 * scale, y - 155 * scale
+    return (f'<g transform="translate({tx:.2f} {ty:.2f}) scale({scale})">'
+            f'<g class="glow"><circle cx="{cx}" cy="{cy}" r="34" fill="{RED}" fill-opacity=".10"/>'
+            f'<circle cx="{cx}" cy="{cy}" r="22" fill="{RED}" fill-opacity=".22"/></g>'
+            f'<g fill="none" stroke-width="{lg["stroke"]}" stroke-linecap="round" stroke-linejoin="round">'
+            f'<path d="{lg["left"]}" stroke="url(#gl)"/><path d="{lg["right"]}" stroke="url(#gr)"/></g>'
+            f'<circle class="dot" cx="{cx}" cy="{cy}" r="{r}" fill="{RED}"/></g>')
 
 
 def p_header(d, y):
-    prof, now = d["prof"], d["now"]
-    name = prof["name"].upper()
-    size = int(min(64, 780 / (0.62 * max(len(name), 1))))
-    return [text(PAD, y + 24, f"{prof['login']}@github:~$ card", 10, MUTED, ls=1),
-            text(W - PAD, y + 24, f"UPDATED {now:%Y-%m-%d %H:%M} UTC", 10, MUTED, "end", ls=1),
-            hline(y + 38),
-            text(PAD, y + 38 + 78, name, size, TEXT, weight="700"),
-            text(PAD, y + 38 + 104, "> " + prof["tagline"], 14, MUTED),
-            hline(y + 38 + 124)], 38 + 124
+    prof = d["prof"]
+    name = clip(prof["name"].upper(), (W - M - 270) * 10 // 240)  # at most this many chars so the name stays 40px or larger
+    return [logo(M, y + 64, 0.625, d), disp(270, y + 140, name, fit(name, 104, W - M - 270)),
+            text(270, y + 184, prof["tagline"], 20, SEC)], 232
 
 
 def p_stack(d, y):
-    tools, per_row = d["tools"], (W - 2 * PAD) // 48
+    tools, pitch = d["tools"], 56
+    per_row = (IW + 20) // pitch
     rows = max(1, -(-len(tools) // per_row))
-    out = [label(PAD, y + 30, "Stack", f"{len(tools)} tools")]
+    out = [title(y + 22, "Stack", f"{len(tools)} tools")]
     for i, t in enumerate(tools):
-        cx, cy = PAD + (i % per_row) * 48, y + 50 + (i // per_row) * 46
-        out.append(f'<g transform="translate({cx} {cy})"><title>{escape(t["name"])}</title>'
-                   f'<path d="{d["icons"][t["icon"]]}" fill="{TEXT}"/></g>')
-    h = 50 + rows * 46 + 8
-    out.append(hline(y + h))
-    return out, h
+        out.append(f'<g transform="translate({M + (i % per_row) * pitch} {y + 58 + (i // per_row) * pitch}) scale(1.5)">'
+                   f'<title>{escape(t["name"])}</title><path d="{d["icons"][t["icon"]]}" fill="{WHITE}"/></g>')
+    return out, 58 + rows * pitch - 20
 
 
 def p_contrib(d, y):
-    """Left: 31-day bars. Right: totals and streaks."""
-    h, split = 200, 570
-    vals, mx = d["last31"], max(d["last31"] + [1])
-    top3 = [i for i in sorted(range(31), key=lambda i: -vals[i])[:3] if vals[i]]
-    out = [label(PAD, y + 30, "Contributions", f"{n(sum(vals))} in the last 31 days")]
-    base, ch, bw = y + h - 34, 100, 13
+    vals, ma, dates = d["last31"], d["ma"], d["dates"]
+    mx = max(vals + [1])
+    ch, base = 120, y + 190
+    peak = vals.index(max(vals)) if max(vals) > 0 else None
+    pitch = IW / 31
+    out = [title(y + 22, "Contributions", f"{n(sum(vals))} in 31 days, {dates[0]:%b} {dates[0].day} to {dates[-1]:%b} {dates[-1].day}")]
     for i, v in enumerate(vals):
-        bh = max(2, round(ch * v / mx)) if v else 2
-        out.append(f'<rect x="{PAD + i * 17}" y="{base - bh}" width="{bw}" height="{bh}" rx="1.5" fill="{TEXT if i in top3 else BAR}"/>')
-    if top3:
-        i = top3[0]
-        out.append(text(PAD + i * 17 + bw / 2, base - round(ch * vals[i] / mx) - 6, str(vals[i]), 10, TEXT, "middle"))
-    first = d["now"].date() - datetime.timedelta(days=30)
-    out += [text(PAD, y + h - 12, f"{first:%b %d}".upper(), 10, MUTED, ls=1),
-            text(split - 30, y + h - 12, "TODAY", 10, MUTED, "end", ls=1)]
-    x = split + 26
-    big = lambda yy, v, size, note: text(x, yy, v, size, TEXT, weight="700") + text(x + len(v) * size * 0.6 + 12, yy, note, 11, MUTED)
-    out += [vline(split, y, y + h), label(x, y + 30, "Totals", "all time"),
-            big(y + 82, n(d["total"]), 40, "contributions"),
-            big(y + 118, str(d["cur"]), 30, "day streak, current"),
-            big(y + 150, str(d["best"]), 30, "day streak, best")]
-    bw2 = W - PAD - x - 60
-    out += [track(x, y + 168, bw2, min(1, d["cur"] / d["best"]) if d["best"] else 0),
-            text(W - PAD, y + 177, f"{d['cur']}/{d['best']}", 10, MUTED, "end"), hline(y + h)]
-    return out, h
+        x = M + i * pitch + (pitch - 8) / 2
+        if v == 0:
+            out.append(f'<rect x="{x:.1f}" y="{base - 2}" width="8" height="2" rx="1" fill="{EMPTY}"/>')
+        else:
+            bh = max(6, round(ch * v / mx))
+            out.append(f'<rect class="bar" x="{x:.1f}" y="{base - bh}" width="8" height="{bh}" rx="4" '
+                       f'fill="{RED if i == peak else BAR}" style="animation-delay:{i * 0.08:.2f}s"/>')
+    if peak is not None:
+        out.append(text(M + peak * pitch + pitch / 2, base - round(ch * vals[peak] / mx) - 10, str(vals[peak]), 16, WHITE, "middle", "700"))
+    pts = " ".join(f"{M + i * pitch + pitch / 2:.1f},{base - ch * m / mx:.1f}" for i, m in enumerate(ma))
+    out.append(f'<polyline points="{pts}" fill="none" stroke="{WHITE}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>')
+    out.append(f'<line x1="{M}" y1="{base + 30}" x2="{M + 28}" y2="{base + 30}" stroke="{WHITE}" stroke-width="2" stroke-linecap="round"/>'
+               + text(M + 40, base + 36, "7-day average", 16, SEC))
+    return out, 232
 
 
-def lang_rows(d, x, y, bar_w, right):
-    langs = sorted(d["langs"].items(), key=lambda kv: -kv[1])[:6]
-    tot = sum(d["langs"].values())
-    if not langs or not tot:
-        return [text(x, y + 20, "No language data", 13, MUTED)]
-    out = []
-    for i, (name, b) in enumerate(langs):
-        ry, pct = y + i * 28, b / tot
-        out += [text(x, ry + 10, clip(name, 14), 12), f'<rect x="{x + 130}" y="{ry}" width="{bar_w}" height="10" rx="5" fill="{LINE}"/>',
-                f'<rect x="{x + 130}" y="{ry}" width="{max(4, round(bar_w * pct))}" height="10" rx="5" fill="{TEXT if i == 0 else BAR}"/>',
-                text(right, ry + 10, f"{pct * 100:.1f}%", 11, MUTED, "end")]
-    return out
+def p_totals(d, y):
+    out = [title(y + 22, "Totals", "all time")]
+    cols = [(M, n(d["total"]), "contributions", WHITE), (M + 300, str(d["cur"]), "day streak", RED if d["cur"] else WHITE),
+            (M + 560, str(d["best"]), "best streak", WHITE)]
+    for x, v, lab, col in cols:
+        out += [disp(x, y + 108, v, fit(v, 72, 250), col), text(x, y + 142, lab, 18, SEC)]
+    return out, 150
 
 
 def p_langs(d, y):
-    """Languages across the full width, or beside the Shipped panel when data/sites.json lists sites."""
-    sites = d["sites"]
-    rows = max(1, min(6, len(d["langs"])))
-    h = 232 if sites else 62 + rows * 28 + 8
-    out = [label(PAD, y + 30, "Languages", "by bytes")]
-    if not sites:
-        out += lang_rows(d, PAD, y + 62, W - 2 * PAD - 130 - 70, W - PAD) + [hline(y + h)]
-        return out, h
-    split = 427
-    out += lang_rows(d, PAD, y + 62, 180, split - 24)
-    x = split + 26
-    out += [vline(split, y, y + h), label(x, y + 30, "Shipped", "live sites"),
-            text(x, y + 92, str(len(sites)), 52, TEXT, weight="700"),
-            text(x + 70, y + 72, "live sites" if len(sites) != 1 else "live site", 12), text(x + 70, y + 88, "built by me, public today", 10, MUTED)]
-    for i, s in enumerate(sites[:6]):
-        ry = y + 118 + i * 17
-        out += [f'<circle cx="{x + 3}" cy="{ry - 4}" r="2.5" fill="{TEXT}"/>', text(x + 14, ry, clip(s["site"], MAX_SITE), 11.5),
-                text(W - PAD, ry, clip(s["kind"], 18), 10.5, MUTED, "end")]
-    out.append(hline(y + h))
-    return out, h
+    langs = sorted(d["langs"].items(), key=lambda kv: -kv[1])[:6]
+    tot = sum(d["langs"].values())
+    out = [title(y + 22, "Languages", "by bytes")]
+    if not langs or not tot:
+        return out + [text(M, y + 74, "No language data", 18, SEC)], 90
+    bx, bw = M + 190, IW - 190 - 90
+    for i, (name, b) in enumerate(langs):
+        ry, pct = y + 58 + i * 40, b / tot
+        out += [text(M, ry + 14, clip(name, 15), 18), f'<rect x="{bx}" y="{ry + 3}" width="{bw}" height="10" rx="5" fill="{TRACK}"/>',
+                f'<rect x="{bx}" y="{ry + 3}" width="{max(10, round(bw * pct))}" height="10" rx="5" fill="{WHITE if i == 0 else BAR}"/>',
+                text(W - M, ry + 14, f"{pct * 100:.1f}%", 18, WHITE, "end")]
+    return out, 58 + len(langs) * 40 - 14
 
 
-def p_tokens(d, y):
-    h, tk, prof = 150, d["tokens"], d["prof"]
+def shares(models):
+    """Integer percentages that add up to exactly 100 (largest remainder)."""
+    tot = sum(models.values())
+    if not tot:
+        return {}
+    raw = {k: v * 100 / tot for k, v in models.items()}
+    out = {k: int(v) for k, v in raw.items()}
+    for k in sorted(raw, key=lambda k: raw[k] - out[k], reverse=True)[:100 - sum(out.values())]:
+        out[k] += 1
+    return out
+
+
+def p_tokens(d, y, css):
+    tk, goal = d["tokens"], d["prof"]["goal_billions"] * 1e9
     since = datetime.date.fromisoformat(tk["since"])
-    out = [label(PAD, y + 30, "Token spend", f"since {since:%b %Y}"),
-           text(PAD, y + 88, n(tk["total"]), 52, TEXT, weight="700")]
-    bw, goal = W - 2 * PAD - 80, prof["goal_billions"] * 1e9
-    out += [track(PAD, y + 104, bw, min(1, tk["total"] / goal) if goal else 0, 10),
-            text(W - PAD, y + 113, f"{tk['total'] / 1e9:.1f}B/{prof['goal_billions']:g}B", 11, MUTED, "end")]
-    return out, h
+    total = tk["total"]
+    frac = min(1, total / goal) if goal else 0
+    pct = f"{total / goal * 100:.1f}%" if goal else "0.0%"
+    out = [title(y + 22, "Token spend", f"since {since:%b %Y}"), disp(M, y + 134, n(total), fit(n(total), 96, IW)),
+           disp(M, y + 212, pct, 56), text(M + len(pct) * 33.6 + 16, y + 212, f"of the {d['prof']['goal_billions']:g}B goal", 18, SEC)]
+    by = y + 238
+    fw = max(14, round(IW * frac)) if frac else 0
+    out.append(f'<rect x="{M}" y="{by}" width="{IW}" height="14" rx="7" fill="{TRACK}"/>')
+    if fw:
+        out += [f'<clipPath id="fc"><rect x="{M}" y="{by}" width="{fw}" height="14" rx="7"/></clipPath>',
+                f'<rect class="fill" x="{M}" y="{by}" width="{fw}" height="14" rx="7" fill="{WHITE}"/>',
+                f'<g clip-path="url(#fc)"><rect class="sweep" x="{M - SPAN}" y="{by}" width="{SPAN}" height="14" fill="url(#sw)"/></g>']
+        css.append("@keyframes sweep{0%%{transform:translateX(0)}100%%{transform:translateX(%dpx)}}" % (fw + SPAN))
+    models = tk.get("models") or {}
+    sh = shares(models)
+    if sh:
+        sy, x = by + 36, M
+        for i, (k, v) in enumerate(models.items()):
+            w = max(6, (IW - 4 * (len(models) - 1)) * v / total)
+            out.append(f'<rect x="{x:.1f}" y="{sy}" width="{w:.1f}" height="6" rx="3" fill="{SEG[min(i, 3)]}"/>')
+            x += w + 4
+        labels = "".join(f'<tspan dx="{0 if i == 0 else 28}">{escape(k)} {sh[k]}%</tspan>' for i, k in enumerate(models))
+        out.append(f'<text x="{M}" y="{sy + 36}" font-family="{SANS}" font-size="16" fill="{SEC}">{labels}</text>')
+    return out, 354
+
+
+def font_b64():
+    p = ROOT / "data" / "display-font.b64"
+    return p.read_text(encoding="ascii").strip() if p.exists() else ""
 
 
 def build(d):
+    d = {**d, "logo": read("logo.json")}
+    css = []
     parts, y = [], 0
-    for fn in (p_header, p_stack, p_contrib, p_langs, p_tokens):
-        out, h = fn(d, y)
+    for fn in (p_header, p_stack, p_contrib, p_totals, p_langs, p_tokens):
+        out, h = fn(d, y, css) if fn is p_tokens else fn(d, y)
         parts += out
-        y += h
+        y += h + 72
+    foot = y - 72 + 56
+    parts.append(text(M, foot, f"Updated {et_label(d['now'])}", 16, SEC))
+    height = foot + 48
+    font = font_b64()
+    static = (
+        (f"@font-face{{font-family:PneuMono;font-weight:800;src:url(data:font/woff2;base64,{font}) format('woff2')}}" if font else "")
+        + "@keyframes breath-dot{0%,100%{transform:scale(1)}50%{transform:scale(1.25)}}"
+        "@keyframes breath-glow{0%,100%{opacity:.45}50%{opacity:1}}"
+        "@keyframes breath-bar{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.04)}}"
+        "@keyframes breath-fill{0%,100%{opacity:.86}50%{opacity:1}}"
+        ".dot{transform-box:fill-box;transform-origin:center;animation:breath-dot 6s ease-in-out infinite}"
+        ".glow{animation:breath-glow 6s ease-in-out infinite}"
+        ".bar{transform-box:fill-box;transform-origin:50% 100%;animation:breath-bar 6s ease-in-out infinite}"
+        ".fill{animation:breath-fill 6s ease-in-out infinite}"
+        ".sweep{animation:sweep 2.4s ease-in-out infinite}"
+        "@media (prefers-reduced-motion:reduce){.dot,.glow,.bar,.fill{animation:none}.sweep{display:none}}")
     desc = (f"{d['prof']['name']} GitHub profile card: {len(d['tools'])} tools, {n(d['total'])} contributions, "
-            f"{d['cur']} day streak, {n(d['tokens']['total'])} tokens" + (f", {len(d['sites'])} live sites." if d["sites"] else "."))
-    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{y}" viewBox="0 0 {W} {y}" role="img" aria-label="{escape(desc)}">'
-            f'<title>{escape(desc)}</title><rect width="{W}" height="{y}" rx="12" fill="{BG}"/>' + "".join(parts) +
-            f'<rect x=".5" y=".5" width="{W - 1}" height="{y - 1}" rx="12" fill="none" stroke="{LINE}"/></svg>\n')
+            f"{d['cur']} day streak, {n(d['tokens']['total'])} tokens.")
+    defs = ('<linearGradient id="gl" gradientUnits="userSpaceOnUse" x1="229" y1="0" x2="80" y2="0"><stop offset="0" stop-color="#E6E6E6"/>'
+            '<stop offset="1" stop-color="#777777"/></linearGradient>'
+            '<linearGradient id="gr" gradientUnits="userSpaceOnUse" x1="229" y1="0" x2="378" y2="0"><stop offset="0" stop-color="#E6E6E6"/>'
+            '<stop offset="1" stop-color="#797979"/></linearGradient>'
+            f'<linearGradient id="sw" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="{RED}" stop-opacity="0"/>'
+            f'<stop offset=".55" stop-color="{RED}" stop-opacity=".3"/><stop offset=".88" stop-color="{RED}" stop-opacity=".95"/>'
+            f'<stop offset="1" stop-color="{RED}" stop-opacity="0"/></linearGradient>')
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{height}" viewBox="0 0 {W} {height}" role="img" aria-label="{escape(desc)}">'
+            f'<title>{escape(desc)}</title><style>{static}{"".join(css)}</style><defs>{defs}</defs>'
+            f'<rect width="{W}" height="{height}" rx="16" fill="{BG}"/>' + "".join(parts) + "</svg>\n")
 
 
 def main(argv=None):

@@ -5,7 +5,7 @@
   python scripts/scan_tokens.py --push   also pull --rebase, commit if changed, push (retry once); errors go to logs/token-sync.log
 Only aggregates are written; "since" is the earliest log timestamp found.
 """
-import datetime, glob, json, os, pathlib, subprocess, sys
+import datetime, glob, json, os, pathlib, re, subprocess, sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 HOME = os.path.expanduser("~")
@@ -30,6 +30,11 @@ def jsonl(path):
                 pass
 
 
+def family(model):
+    m = re.match(r"claude-([a-z]+)-", (model or "").lower())  # claude-opus-5-5 -> Opus; <synthetic> etc. -> Other
+    return m.group(1).capitalize() if m else "Other"
+
+
 def claude():
     seen, first = {}, "9999"  # streaming writes the same message repeatedly: one entry per message id + request id
     for p in glob.glob(os.path.join(HOME, ".claude", "projects", "**", "*.jsonl"), recursive=True):
@@ -40,9 +45,12 @@ def claude():
             u, ts = m["usage"], (d.get("timestamp") or "")[:10]
             if ts:
                 first = min(first, ts)
-            seen[(m.get("id"), d.get("requestId"), d.get("uuid") if not m.get("id") else None)] = sum(
-                u.get(k, 0) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"))
-    return sum(seen.values()), first
+            seen[(m.get("id"), d.get("requestId"), d.get("uuid") if not m.get("id") else None)] = (family(m.get("model")), sum(
+                u.get(k, 0) or 0 for k in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens")))
+    fams = {}
+    for fam, tok in seen.values():
+        fams[fam] = fams.get(fam, 0) + tok
+    return fams, first
 
 
 def codex():
@@ -60,10 +68,21 @@ def codex():
     return total, first
 
 
+def top_models(fams):
+    """Top 3 families by tokens, the rest summed into Other; the values add up to the total."""
+    ranked = sorted(((k, v) for k, v in fams.items() if v and k != "Other"), key=lambda kv: -kv[1])
+    top = dict(ranked[:3])
+    other = sum(fams.values()) - sum(top.values())
+    return {**top, **({"Other": other} if other else {})}
+
+
 def compute():
-    c, c_first = claude()
+    fams, c_first = claude()
     x, x_first = codex() if os.path.isdir(os.path.join(HOME, ".codex", "sessions")) else (0, "9999")
-    return {"total": c + x, "claude": c, "codex": x, "since": min(c_first, x_first)}
+    c = sum(fams.values())
+    if x:
+        fams["Codex"] = x
+    return {"total": c + x, "claude": c, "codex": x, "since": min(c_first, x_first), "models": top_models(fams)}
 
 
 def git(*args):
