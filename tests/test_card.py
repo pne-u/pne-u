@@ -260,43 +260,32 @@ with tempfile.TemporaryDirectory() as tmp:
     d = data({day(0): 1}, {"Python": 1}, tmp)
     svg = b.build(d)
     root = ET.fromstring(svg)
-    paths = [e for e in root.iter(NS + "path") if e.get("class") in ("base", "traceout", "trace", "headout", "head")]
-    assert [e.get("class") for e in paths] == ["base", "traceout", "trace", "headout", "head"] and len({e.get("d") for e in paths}) == 1 and paths[0].get("d").count("M") == 1
-    g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)                                    # one path, three strokes
+    import qc_breath as qb
+    classes = [e.get("class") for e in root.iter(NS + "path") if e.get("class") in ("base", "glow", "bright")]
+    assert classes == ["base", "base", "glow", "glow", "bright", "bright"] and all(e.get("pathLength") == "1" for e in root.iter(NS + "path") if e.get("class") in ("base", "glow", "bright"))
+    bright = [e for e in root.iter(NS + "path") if e.get("class") == "bright"]
+    g = b.banner_geometry({**d, "logo": b.read("logo.json")}, 0)
     cx, cy = g["dot"]
-    near = min(g["samples"], key=lambda p: math.hypot(p[0] - cx, p[1] - cy))
-    assert g["samples"][0][0] < cx < g["samples"][-1][0] and abs(g["l_dot"] / g["total"] - 0.5) < 0.05   # left tip -> dot -> right tip
-    assert math.hypot(near[0] - cx, near[1] - cy) < 0.6 and abs(near[2] - g["l_dot"]) < 1.5           # the red dot sits on the path
-    css = ET.fromstring(svg).find(NS + "style").text
-    cyc = b.INHALE + b.HOLD + b.EXHALE
-    assert b.CYCLE == cyc and f" {cyc}s " in css and "prefers-reduced-motion" in css                # cycle derived from the three constants
-    pc = lambda t: f"{t / cyc * 100:.4f}%"
-    P, eps, L, ld = 0.16 * b.PL, 0.8, b.PL, b.PL * g["l_dot"] / g["total"]    # normalised pathLength units
-
-    def frames(name, text_=css):
-        body = re.search(r"@keyframes " + name + r"\{(.*)", text_).group(1)
-        return re.findall(r"([\d.]+%)\{([^}]*)\}", body[:body.index("}}") + 2])
-    for name, off in (("tdash", P), ("hdash", eps)):
-        k = frames(name)
-        assert [p_ for p_, _ in k] == ["0%", pc(b.INHALE), pc(b.INHALE + b.HOLD), "100%"], (name, k)  # percentages from the constants
-        offs = [float(re.search(r"stroke-dashoffset:(-?[\d.]+)", x).group(1)) for _, x in k]
-        assert abs(offs[0] - off) < 0.01 and abs(offs[1] - (off - ld)) < 0.01 and offs[1] == offs[2] and abs(offs[3] - (off - L)) < 0.01   # tip, dot, dot (hold), tip
-        assert [x.split("animation-timing-function:")[1] if "timing" in x else None for _, x in k] == ["ease-in-out", "linear", "ease-in-out", None]
-    ko = [float(re.search(r"stroke-dashoffset:(-?[\d.]+)", x).group(1)) for _, x in frames("hdash")]
-    kt = [float(re.search(r"stroke-dashoffset:(-?[\d.]+)", x).group(1)) for _, x in frames("tdash")]
-    assert all(abs((a - c) - (P - eps)) < 0.02 for a, c in zip(kt, ko))                              # head stays glued to the trace tip
-    fade = re.findall(r"([\d.]+%)\{stroke-opacity:([\d.]+)\}", re.search(r"@keyframes fade\{(.*?)\}\}", css).group(1) + "}")
-    assert fade[0] == ("0%", "0") and fade[-1] == ("100%", "0")                                       # seamless restart: faded out at both ends
-    ti = b.INHALE
-    assert abs(b.head_at(g, 0)) < 1e-6 and abs(b.head_at(g, ti) - g["l_dot"]) < 1e-9 and abs(b.head_at(g, cyc - 1e-9) - g["total"]) < 1e-3
-    assert all(abs(b.head_at(g, ti + k_ * b.HOLD / 4) - g["l_dot"]) < 1e-9 for k_ in range(5))              # stationary on the dot for the whole hold
-    old = (b.HOLD, b.CYCLE)                                                                          # HOLD = 0 drops the duplicate hold keyframe
-    b.HOLD, b.CYCLE = 0, b.INHALE + b.EXHALE
-    try:
-        k0 = frames("tdash", b.breath_css(g)[0])
-        assert [p_ for p_, _ in k0] == ["0%", f"{b.INHALE / b.CYCLE * 100:.4f}%", "100%"], k0
-    finally:
-        b.HOLD, b.CYCLE = old
+    assert bright[0].get("d") == g["d_left"] and bright[1].get("d") == g["d_right"]
+    assert g["d_right"].startswith(f"M{cx:.2f} {cy:.2f}C") and g["d_left"].endswith(f"{cx:.2f} {cy:.2f}")          # both halves meet exactly on the dot, no gap
+    assert g["samples"][0][0] < cx < g["samples"][-1][0]                                                             # left centre -> dot -> right centre
+    an = qb.banner_anims(svg)
+    assert an["loop"] == b.LOOP == 8.0 and (b.LEFT_S, b.LEFT_E, b.RIGHT_S, b.RIGHT_E) == (0.0, 3.4, 3.5, 6.9)
+    dense = [k / 100 for k in range(0, 801)]
+    for side, (s, e) in (("left", (b.LEFT_S, b.LEFT_E)), ("right", (b.RIGHT_S, b.RIGHT_E))):
+        L = [qb.seg_len(an, side, tt) for tt in dense]
+        assert min(L) >= 0 and all(abs(x) < 1e-9 for tt, x in zip(dense, L) if tt <= s or tt >= e)               # zero outside its phase, never negative
+        assert abs(max(L) - (2 * math.sin(math.pi / 4) - 1)) < 5e-3 and abs(qb.seg_len(an, side, e)) < 1e-9       # peaks near 0.41, exactly 0 at phase end
+        for tt in dense:
+            op = qb.value_at(an[side]["opacity"], tt, an["loop"])
+            assert not (tt < s or tt > e) or op == 0, (side, tt)                                                    # opacity 0 outside the phase
+            assert qb.value_at(an[side]["cap"], tt, an["loop"]) != "round" or qb.seg_len(an, side, tt) > 0         # round caps only while len > 0
+        assert len(an[side]["len"].get("values").split(";")) >= b.STEPS + 1                                         # 16+ keyframes per phase from the formulas
+    for u_ in (0.0, 0.25, 0.5, 0.75, 1.0):
+        assert abs(b.line_len(u_) - max(0.0, math.sin(math.pi * u_ / 2) - (1 - math.cos(math.pi * u_ / 2)))) < 1e-12
+    dots = [qb.value_at(an["dot"], tt, an["loop"]) for tt in dense]
+    assert abs(dense[dots.index(max(dots))] - 3.4) < 0.011 and abs(dots[0] - b.DOT_REST_OPACITY) < 1e-9 and abs(dots[500] - b.DOT_REST_OPACITY) < 1e-9
+    assert abs(qb.value_at(an["dot"], 3.7, 8.0) - max(dots)) < 1e-9 and abs(qb.value_at(an["dot"], 2.4, 8.0) - dots[0]) < 1e-9
     # groups for the spacing QC exist
     ids = {e.get("id") for e in root.iter(NS + "g") if e.get("id")}
     assert {"sec-banner", "sec-tokens", "sec-daily", "sec-tod", "sec-weekday", "sec-activity", "sec-streak", "sec-langs", "sec-stack", "sec-footer"} <= ids
@@ -312,13 +301,13 @@ with tempfile.TemporaryDirectory() as tmp:
     assert all(e.get("fill") == b.RED for e in fills(root)) and all(e.get("fill") == b.TRACK for e in root.iter() if e.get("class") == "trk")
     # layered header: draw order, shared axis, dot at the middle of the capital letters, tagline centred
     svg = b.build(data({day(0): 1}, {"Python": 1}, tmp))
-    order = [svg.index(k) for k in ('class="base"', 'id="title"', 'class="traceout"', 'class="trace"', 'class="dot"', 'class="head"')]
-    assert order == sorted(order) and svg.index('breathe') < svg.index('class="traceout"')            # outline < title/note < trace, dot, head
+    order = [svg.index(k) for k in ('class="base"', 'class="glow"', 'class="bright"', 'class="dotw"', 'id="title"')]
+    assert order == sorted(order) and svg.index('breathe') > order[-1]                                 # lines and dot, then the title on top (note after it)
     root = ET.fromstring(svg)
     gl = [e for e in root.iter(NS + "path") if e.get("data-ink-l")]
     assert [e.get("id")[-1] for e in gl] == list("PNEU")
     Nr, El = float(gl[1].get("data-ink-r")), float(gl[2].get("data-ink-l"))
-    dot = [e for e in root.iter(NS + "circle") if e.get("class") == "dot"][0]
+    dot = [e for e in root.iter(NS + "circle") if e.get("class") == "dots"][0]
     dcx, dcy, r = float(dot.get("cx")), float(dot.get("cy")), float(dot.get("r"))
     assert abs((Nr + El) / 2 - b.W / 2) < 0.01 and abs(dcx - b.W / 2) < 0.01                       # gap axis = card centre = dot x
     assert abs((dcx - r - Nr) - (El - (dcx + r))) < 0.01                   # equal air on both sides of the dot

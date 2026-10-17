@@ -6,6 +6,7 @@ from websockets.sync.client import connect
 
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
 JS = """JSON.stringify((() => {
+  document.documentElement.pauseAnimations(); document.documentElement.setCurrentTime(0);   // dot at rest scale
   const r = e => {const b = e.getBoundingClientRect(); return [b.left, b.top, b.right, b.bottom]};
   const letters = [...document.querySelectorAll('#title path')].map(e => [e.id, ...r(e)]);
   const dot = r(document.querySelector('circle.dot'));

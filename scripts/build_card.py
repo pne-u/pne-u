@@ -15,11 +15,13 @@ from xml.sax.saxutils import escape
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 ICON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@13.21.0/icons/{}.svg"
 
-# Breathing animation timing, in seconds. Everything else (cycle length, keyframe percentages) is derived from these.
-INHALE = 4
-HOLD = 2
-EXHALE = 6
-CYCLE = INHALE + HOLD + EXHALE
+# Breath timeline: seconds on one loop. Every keyframe time in the banner is derived from these.
+LOOP = 8.0
+LEFT_S, LEFT_E = 0.0, 3.4              # left line: grows from the left spiral's centre, collapses into the dot
+RIGHT_S, RIGHT_E = 3.5, 6.9            # right line: grows out of the dot, collapses at the right spiral's centre
+DOT_WARM, DOT_HOLD, DOT_REST = 2.4, 3.7, 5.0   # dot warms from 2.4s, peaks at LEFT_E, stays near peak to 3.7s, back to rest by 5.0s
+DOT_REST_OPACITY = 0.55
+STEPS = 20                             # linear keyframes per phase
 
 
 # ---------------------------------------------------------------- data
@@ -299,7 +301,6 @@ SPIRAL_CY = 62      # y of the spiral centre = the red dot = the middle of the c
 HEADER_H = 134      # band height including the tagline
 DOT_R = 7           # radius of the red dot
 TITLE_SIZE = 64     # title font size in px (the title is drawn from glyph outlines)
-PL = 1000           # pathLength of the spiral: dash values are in these units, so the head and trace land on the tips in any renderer
 
 
 def parse_bez(d):
@@ -348,6 +349,8 @@ def banner_geometry(d, y=0):
     start = T(start)
     cmd = lambda c1, c2, p: f"C{c1[0]:.2f} {c1[1]:.2f} {c2[0]:.2f} {c2[1]:.2f} {p[0]:.2f} {p[1]:.2f}"
     path = f"M{start[0]:.2f} {start[1]:.2f}" + "".join(cmd(*seg) for seg in lrev) + "".join(cmd(*seg) for seg in rsegs)
+    d_left = f"M{start[0]:.2f} {start[1]:.2f}" + "".join(cmd(*seg) for seg in lrev)          # left spiral centre -> outward -> S-line -> dot
+    d_right = f"M{cx:.2f} {cy:.2f}" + "".join(cmd(*seg) for seg in rsegs)                    # dot -> right spiral inward to its centre (starts exactly on the dot)
     total, cur, samples, l_dot = 0.0, start, [(start[0], start[1], 0.0)], 0.0
     for part, segs in ((0, lrev), (1, rsegs)):
         for c1, c2, p in segs:
@@ -356,50 +359,60 @@ def banner_geometry(d, y=0):
             total, cur = total + length, p
         if part == 0:
             l_dot = total
-    return {"d": path, "total": total, "l_dot": l_dot, "samples": samples, "dot": (cx, cy)}
+    return {"d": path, "d_left": d_left, "d_right": d_right, "total": total, "l_dot": l_dot, "samples": samples, "dot": (cx, cy)}
 
 
-FADE_IN, FADE_OUT = 0.05 * INHALE, 0.05 * EXHALE  # seconds; hides the jump from the right tip back to the left tip when the loop restarts
+# ---- breath: two SMIL lines (left centre -> dot, dot -> right centre) that lengthen, then collapse to nothing, plus the dot's warm-up
+
+def smooth(x):
+    return x * x * (3 - 2 * x)
 
 
-def ease(u):
-    """CSS ease-in-out, cubic-bezier(.42, 0, .58, 1): the eased progress for linear progress u."""
-    bez = lambda t, a, b: 3 * a * t * (1 - t) ** 2 + 3 * b * t * t * (1 - t) + t ** 3
-    lo, hi = 0.0, 1.0
-    for _ in range(50):
-        mid = (lo + hi) / 2
-        lo, hi = (mid, hi) if bez(mid, 0.42, 0.58) < u else (lo, mid)
-    return bez((lo + hi) / 2, 0, 1)
+def line_tail(u):
+    return 1 - math.cos(math.pi * u / 2)
 
 
-def head_at(g, t):
-    """Where the head is (arc length) at time t of the loop: left tip at 0, on the dot after INHALE, held for HOLD, right tip after EXHALE."""
-    t %= CYCLE
-    if t <= INHALE:
-        return g["l_dot"] * ease(t / INHALE)
-    if t <= INHALE + HOLD:
-        return g["l_dot"]
-    return g["l_dot"] + (g["total"] - g["l_dot"]) * ease((t - INHALE - HOLD) / EXHALE)
+def line_len(u):
+    """Visible length of a half (share of its pathLength) at phase progress u: head - tail with head = sin(pi u / 2), tail = 1 - cos(pi u / 2).
+    0 at u = 0, about 0.41 at u = 0.5, exactly 0 again at u = 1 (head = tail = 1). Never negative."""
+    return max(0.0, math.sin(math.pi * u / 2) - line_tail(u))
 
 
-def breath_css(g):
-    """Keyframes: 0% left tip, INHALE% on the dot, INHALE+HOLD% still on the dot, 100% right tip. A timing function in a keyframe shapes the
-    segment that starts there: ease-in-out inhale, linear hold, ease-in-out exhale. The trace and the head are the same path animated with
-    the same keyframes (a long dash and a zero-length round dash), so the head cannot drift off the tip of the trace."""
-    L, ld = PL, PL * g["l_dot"] / g["total"]       # normalised units (pathLength)
-    P, eps = 0.16 * PL, 0.8
-    pc = lambda t: f"{t / CYCLE * 100:.4f}%"
-    eio, lin = "animation-timing-function:ease-in-out", "animation-timing-function:linear"
+def kt(t):
+    return f"{t / LOOP:.5f}"
 
-    def frames(name, decl):
-        kf = f"0%{{{decl(0)};{eio}}}"
-        if HOLD:
-            kf += f"{pc(INHALE)}{{{decl(ld)};{lin}}}{pc(INHALE + HOLD)}{{{decl(ld)};{eio}}}"
-        else:                                    # no hold: one keyframe on the dot, the exhale easing starts there
-            kf += f"{pc(INHALE)}{{{decl(ld)};{eio}}}"
-        return f"@keyframes {name}{{{kf}100%{{{decl(L)}}}}}"
-    fade = (f"@keyframes fade{{0%{{stroke-opacity:0}}{pc(FADE_IN)}{{stroke-opacity:1}}{pc(CYCLE - FADE_OUT)}{{stroke-opacity:1}}100%{{stroke-opacity:0}}}}")
-    return frames("tdash", lambda h: f"stroke-dashoffset:{P - h:.2f}") + frames("hdash", lambda h: f"stroke-dashoffset:{eps - h:.2f}") + fade, P, eps
+
+def animate(attr, times, values, calc="linear", tag="animate", extra=""):
+    return (f'<{tag} attributeName="{attr}"{extra} dur="{LOOP:g}s" repeatCount="indefinite" calcMode="{calc}" '
+            f'keyTimes="{";".join(kt(t) for t in times)}" values="{";".join(values)}"/>')
+
+
+def line_anims(s, e, peak):
+    """SMIL for one overlay path active from s to e seconds of the loop: dasharray 'len 2', dashoffset -tail (STEPS+1 linear keyframes per
+    phase), opacity discrete (0 outside the phase), round caps only while the segment has length."""
+    pts = [(s + (e - s) * k / STEPS, k / STEPS) for k in range(STEPS + 1)]
+    times = ([0.0] if s > 0 else []) + [t for t, _ in pts] + ([LOOP] if e < LOOP else [])
+    us = ([None] if s > 0 else []) + [u for _, u in pts] + ([None] if e < LOOP else [])
+    dash = [f"{line_len(u):.5f} 2" if u is not None else "0 2" for u in us]
+    off = [f"{-line_tail(u):.5f}" if u is not None else ("0" if i == 0 else "-1") for i, u in enumerate(us)]
+    otimes, ovals = ([0.0, e, LOOP], [f"{peak:g}", "0", "0"]) if s == 0 else ([0.0, s, e, LOOP], ["0", f"{peak:g}", "0", "0"])
+    ctimes, cvals = [0.0, pts[1][0], e, LOOP], ["butt", "round", "butt", "butt"]
+    return (animate("stroke-dasharray", times, dash) + animate("stroke-dashoffset", times, off)
+            + animate("opacity", otimes, ovals, "discrete") + animate("stroke-linecap", ctimes, cvals, "discrete"))
+
+
+def dot_curve():
+    """(times, f): f = 0 at rest, 1 at the peak. Warms from DOT_WARM, peaks exactly at LEFT_E, holds to DOT_HOLD, eases back by DOT_REST."""
+    ts, fs = [0.0], [0.0]
+    for k in range(11):
+        ts.append(DOT_WARM + (LEFT_E - DOT_WARM) * k / 10)
+        fs.append(smooth(k / 10))
+    ts.append(DOT_HOLD)
+    fs.append(1.0)
+    for k in range(1, 13):
+        ts.append(DOT_HOLD + (DOT_REST - DOT_HOLD) * k / 12)
+        fs.append(1 - smooth(k / 12))
+    return ts + [LOOP], fs + [0.0]
 
 
 def grp(name, parts):
@@ -425,14 +438,25 @@ def title_layout(name, size, mid_gap):
 
 
 def p_banner(d, y, css):
-    """Header band, drawn back to front: 1) faint static spiral outline, 2) title (glyph paths) + tagline + note, 3) animated trace, red dot, head."""
+    """Header band, back to front: dim base lines, soft glow lines, bright lines, the dot (warms as the left line collapses into it), then the
+    PNEU title, tagline and note on top so the name is legible in every frame."""
     g = banner_geometry(d, y)
     cx, cy = g["dot"]                       # the red dot: x = the title's gap axis = card centre, y = middle of the capital letters
-    kf, P, eps = breath_css(g)
-    css.append(kf)
-    L = PL
-    line = f'd="{g["d"]}" pathLength="{PL}" fill="none" stroke-linecap="round" stroke-linejoin="round"'
-    back = [f'<path class="base" {line} stroke="{INK}" stroke-width="2.8" opacity=".18"/>']
+    halves = ((g["d_left"], LEFT_S, LEFT_E), (g["d_right"], RIGHT_S, RIGHT_E))
+    common = lambda dd: f'd="{dd}" pathLength="1" fill="none" stroke="{INK}" stroke-linejoin="round"'
+    base = [f'<path class="base" {common(dd)} stroke-linecap="round" stroke-width="2.8" opacity=".35"/>' for dd, _, _ in halves]
+    glow = [f'<path class="glow" {common(dd)} stroke-width="5.6" stroke-linecap="butt" stroke-dasharray="0 2" stroke-dashoffset="0" opacity="0">'
+            + line_anims(s, e, 0.25) + "</path>" for dd, s, e in halves]
+    bright = [f'<path class="bright" {common(dd)} stroke-width="2.8" stroke-linecap="butt" stroke-dasharray="0 2" stroke-dashoffset="0" opacity="0">'
+              + line_anims(s, e, 1) + "</path>" for dd, s, e in halves]
+    ts, fs = dot_curve()
+    ring = (f'<circle class="ring" r="{DOT_R * 3}" fill="{RED}" opacity="0">' + animate("opacity", ts, [f"{0.45 * f:.4f}" for f in fs])
+            + animate("transform", ts, [f"{1 + 0.25 * f:.4f}" for f in fs], tag="animateTransform", extra=' type="scale"') + "</circle>")
+    core = (f'<circle class="dot" r="{DOT_R}" fill="{RED}" opacity="{DOT_REST_OPACITY}">'
+            + animate("opacity", ts, [f"{DOT_REST_OPACITY + (1 - DOT_REST_OPACITY) * f:.4f}" for f in fs])
+            + animate("transform", ts, [f"{1 + 0.2 * f:.4f}" for f in fs], tag="animateTransform", extra=' type="scale"') + "</circle>")
+    dot = [f'<g class="dotw" transform="translate({cx:.2f} {cy:.2f})">{ring}{core}</g>',
+           f'<circle class="dots" cx="{cx:.2f}" cy="{cy:.2f}" r="{DOT_R}" fill="{RED}" opacity=".8" display="none"/>']   # static dot for reduced motion
     name = clip(d["prof"]["name"].upper(), 12)
     gl = read("title-glyphs.json")
     mid_gap = 0                              # natural letter spacing: the title reads as one word, the dot sits on top of it
@@ -455,12 +479,7 @@ def p_banner(d, y, css):
     if d["prof"].get("tagline"):
         title.append(text(cx, round(base_y + 34, 1), d["prof"]["tagline"], 18, SEC, "middle", extra=outline))   # centred under the title, same axis
     title.append(note(MG + 4, y + 30, "breathe"))
-    front = [f'<path class="traceout" {line} stroke="{BG}" stroke-width="6.8" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
-             f'<path class="trace" {line} stroke="{INK}" stroke-width="3.2" stroke-dasharray="{P:.2f} {2 * L:.0f}" stroke-dashoffset="{P:.2f}" stroke-opacity="0"/>',
-             f'<circle class="dot" cx="{cx:.2f}" cy="{cy:.2f}" r="{DOT_R}" fill="{RED}"/>',
-             f'<path class="headout" {line} stroke="{BG}" stroke-width="8.5" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>',
-             f'<path class="head" {line} stroke="{INK}" stroke-width="5.5" stroke-dasharray="{eps} {2 * L:.0f}" stroke-dashoffset="{eps}" stroke-opacity="0"/>']
-    return [grp("banner", back + title + front)], HEADER_H
+    return [grp("banner", base + glow + bright + dot + title)], HEADER_H
 
 
 # ---- usage shape (daily tokens, time of day, weekday)
@@ -675,7 +694,7 @@ def sec_tokens(d, x, y, w, css, h=None):
     H = max(h or 0, 30 + block + 12)
     base_y = y + max(30, (H - block) / 2) + cap      # the number and the bar are centred together in the card, below the title
     out = [title(x, y + 16, "Tokens"), disp(x, round(base_y, 1), n(total), hs)]
-    by, bw = round(base_y + 16, 1), w - 112
+    by, bw = round(base_y + 16, 1), w - 136          # room for '123.5% of 10B' at the right end
     out.append(bar_row(x, x + bw, by + 6, 12, frac, RED, "goal", "goal"))
     fw = bw * min(frac, 1)
     if fw > 4:
@@ -812,16 +831,13 @@ def build(d):
     parts.append(grp("footer", [text(MG + 2, foot, f"Updated {et_label(d['now'])}", 16, SEC)]))
     height = foot + 12
     dfont, nfont = font_b64("display-font.b64"), font_b64("note-font.b64")
-    cyc = f"{CYCLE:g}s"
     static = (
         (f"@font-face{{font-family:PneuMono;font-weight:800;src:url(data:font/woff2;base64,{dfont}) format('woff2')}}" if dfont else "")
         + (f"@font-face{{font-family:Caveat;font-weight:400;src:url(data:font/woff2;base64,{nfont}) format('woff2')}}" if nfont else "")
         + "@keyframes breath-bar{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.04)}}"
-        f".trace,.traceout{{animation:tdash {cyc} linear infinite,fade {cyc} linear infinite}}"
-        f".head,.headout{{animation:hdash {cyc} linear infinite,fade {cyc} linear infinite}}"
         ".bar{transform-box:fill-box;transform-origin:50% 100%;animation:breath-bar 6s ease-in-out infinite}"
         ".sweep{animation:sweep 2.4s ease-in-out infinite}"
-        "@media (prefers-reduced-motion:reduce){.bar{animation:none}.trace,.traceout,.head,.headout,.sweep{display:none}.base{opacity:.35}}")
+        "@media (prefers-reduced-motion:reduce){.bar{animation:none}.glow,.bright,.dotw,.sweep{display:none}.dots{display:inline}.base{opacity:.7}}")
     desc = (f"{d['prof']['name']} GitHub profile card: {len(d['tools'])} tools, {n(d['total'])} contributions, "
             f"{d['cur']} day streak, {n(d['tokens']['total'])} tokens.")
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{height}" viewBox="0 0 {W} {height}" role="img" aria-label="{escape(desc)}">'
