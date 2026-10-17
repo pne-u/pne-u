@@ -2,4 +2,4 @@
   <img src="assets/card.svg" width="880" alt="Pneu profile card: tool stack, 31 days of contributions, totals and streaks, top languages by bytes, live sites, and token spend." />
 </p>
 
-<p align="center"><sub>Last updated: <span id="updated">2026-10-17 02:10 UTC</span></sub></p>
+<p align="center"><sub>Last updated: <span id="updated">2026-10-17 02:17 UTC</span></sub></p>
