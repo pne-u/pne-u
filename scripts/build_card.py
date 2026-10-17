@@ -584,7 +584,7 @@ def sec_daily(d, x, y, w, css=None):
     peak = vals.index(mx) if mx > 0 else None
     aw = w - 76
     pitch = aw / len(vals)
-    base = y + 46 + HM
+    base = y + 52 + HM   # 28px of headroom above the tallest bar below the title line (y + 16) plus room for its label
     out = [title(x, y + 16, "Daily tokens, last 14 days"), wavy_line(x - 2, x + aw + 2, base, kid("dbase"))]
     xcs = [x + pitch * (i + 0.5) for i in range(len(vals))]
     tops = {}
@@ -602,10 +602,17 @@ def sec_daily(d, x, y, w, css=None):
     ti = len(days) - 1
     out.append(f'<circle class="today" cx="{xcs[ti]:.1f}" cy="{base + LET_DY + 14}" r="3.5" fill="{INK}"/>')
     ya = base - HM * avg / mx if mx > 0 else base
-    out.append(f'<line class="avg" x1="{x - 2}" y1="{ya:.2f}" x2="{x + aw + 4}" y2="{ya:.2f}" stroke="{SEC}" stroke-width="1.5" stroke-dasharray="7 6" '
-               f'stroke-linecap="round" data-avg="{avg:.3f}"/>' + text(x + aw + 10, round(ya + 5, 1), f"avg {short(avg)}", 16, SEC, "start"))
+    bg = f' paint-order="stroke" stroke="#0A0A0A" stroke-width="5" stroke-linejoin="round"'   # cuts the dashed line behind label text
+    out.append(f'<line class="avg" x1="{x - 2}" y1="{ya:.2f}" x2="{x + aw + 2}" y2="{ya:.2f}" stroke="{SEC}" stroke-width="1" stroke-dasharray="3 5" '
+               f'opacity="0.4" data-avg="{avg:.3f}"/>' + text(x + aw + 8, round(ya + 5.5, 1), f"avg {short(avg)}", 16, SEC, "start", extra=bg))
     for i, (txt, lx, ly) in daily_labels(vals, xcs, tops, peak, ti).items():
-        out.append(text(round(lx, 1), round(ly, 1), txt, 16, RED if i == peak else SEC, "middle", extra=f' data-day="{i}"'))
+        if ly - 16 - 8 <= ya <= ly + 5 + 8:   # label box within 8px of the average line: lift it so its bottom edge is 8px above the line
+            ly = ya - 13
+            hw, bw = label_w(txt) / 2, min(16, pitch - 6) / 2
+            for j, tj in tops.items():   # a lifted label must not land on a taller neighbouring bar: slide it clear sideways
+                if j != i and tj < ly + 5 and abs(xcs[j] - lx) < hw + bw + 4:
+                    lx = xcs[j] + (bw + 4 + hw) * (1 if lx >= xcs[j] else -1)
+        out.append(text(round(lx, 1), round(ly, 1), txt, 16, RED if i == peak else SEC, "middle", extra=f' data-day="{i}"' + bg))
     return out, LET_DY + 14 + 4 + (base - y)
 
 
