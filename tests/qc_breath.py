@@ -7,6 +7,7 @@ value_at() / banner_anims() are also used by tests/test_card.py."""
 import base64, io, json, pathlib, re, subprocess, sys, tempfile, time, urllib.request
 import xml.etree.ElementTree as ET
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "scripts"))
 NS = "{http://www.w3.org/2000/svg}"
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 EDGE = r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"
@@ -22,6 +23,7 @@ def banner_anims(svg_text):
         out[side] = {"len": a["stroke-dasharray"], "off": a["stroke-dashoffset"], "opacity": a["opacity"], "cap": a["stroke-linecap"]}
     dot = [e for e in root.iter(NS + "circle") if e.get("class") == "dot"][0]
     out["dot"] = [x for x in dot.findall(NS + "animate") if x.get("attributeName") == "opacity"][0]
+    out["dscale"] = [x for x in dot.findall(NS + "animateTransform")][0]
     out["loop"] = float(dot.find(NS + "animate").get("dur").rstrip("s"))
     return out
 
@@ -64,6 +66,7 @@ class Browser:
         self.ws = connect([t for t in tabs if t["type"] == "page"][0]["webSocketDebuggerUrl"], max_size=2**26)
         self.n = 0
         self.call("Page.enable")
+        self.call("Emulation.setDeviceMetricsOverride", width=size[0], height=size[1], deviceScaleFactor=1, mobile=False)   # headless Edge clamps narrow windows to ~500px
 
     def call(self, method, **params):
         self.n += 1
@@ -98,12 +101,22 @@ def main(svg_path):
     loop = an["loop"]
     bad = []
     # ---- b. table from the animation values
-    print(f"{'t':>5} {'left len':>9} {'right len':>10} {'dot opacity':>12}")
-    for k in range(33):
+    import build_card as bc
+    meas = {"inhale": bc.LEFT_E - bc.LEFT_S, "hold": bc.RIGHT_S - bc.LEFT_E, "exhale": bc.RIGHT_E - bc.RIGHT_S, "total": loop}
+    print("measured from the SVG:", meas)
+    for k, v in zip(("inhale", "hold", "exhale", "total"), (4.0, 2.0, 6.0, 12.0)):
+        if abs(meas[k] - v) > 0.05:
+            bad.append(f"{k} {meas[k]} != {v}")
+    print(f"{'t':>5} {'left len':>9} {'right len':>10} {'dot opacity':>12} {'dot scale':>10}")
+    for k in range(49):
         t = k * 0.25
-        print(f"{t:5.2f} {seg_len(an, 'left', t):9.4f} {seg_len(an, 'right', t):10.4f} {value_at(an['dot'], t, loop):12.4f}")
-    dense = [i / 100 for i in range(0, 801)]
-    for side, (s, e) in (("left", (0.0, 3.4)), ("right", (3.5, 6.9))):
+        print(f"{t:5.2f} {seg_len(an, 'left', t):9.4f} {seg_len(an, 'right', t):10.4f} {value_at(an['dot'], t, loop):12.4f} {value_at(an['dscale'], t, loop):10.4f}")
+    dense = [i / 100 for i in range(0, 1201)]
+    for t in dense:
+        if 4.0 <= t <= 6.0 and (seg_len(an, "left", t) or seg_len(an, "right", t) or abs(value_at(an["dot"], t, loop) - value_at(an["dot"], 4.0, loop)) > 1e-9 or abs(value_at(an["dscale"], t, loop) - value_at(an["dscale"], 4.0, loop)) > 1e-9):
+            bad.append(f"hold not still at {t}")
+            break
+    for side, (s, e) in (("left", (bc.LEFT_S, bc.LEFT_E)), ("right", (bc.RIGHT_S, bc.RIGHT_E))):
         L = [seg_len(an, side, t) for t in dense]
         if min(L) < 0:
             bad.append(f"{side} negative length")
@@ -124,7 +137,7 @@ def main(svg_path):
     dots = [value_at(an["dot"], t, loop) for t in dense]
     pk = dense[dots.index(max(dots))]
     print(f"dot opacity: rest {dots[0]:.2f}, first reaches its peak {max(dots):.2f} at t={pk:.2f}; at 3.7s {value_at(an['dot'], 3.7, loop):.2f}; at 5.0s {value_at(an['dot'], 5.0, loop):.2f}; at 2.4s {value_at(an['dot'], 2.4, loop):.2f}")
-    if abs(pk - 3.4) > 0.011 or abs(value_at(an["dot"], 5.0, loop) - dots[0]) > 1e-6 or abs(value_at(an["dot"], 2.4, loop) - dots[0]) > 1e-6:
+    if abs(pk - 4.0) > 0.011 or abs(value_at(an["dot"], 12.0, loop) - dots[0]) > 1e-6 or abs(value_at(an["dot"], 2.5, loop) - dots[0]) > 1e-6:
         bad.append("dot opacity timeline")
     # ---- a. deterministic frames
     root = ET.fromstring(svg)
@@ -135,7 +148,7 @@ def main(svg_path):
     frames = {}
     try:
         br.open(svg_path)
-        for t in [k * 0.25 for k in range(33)] + [3.4, 3.5, 6.9]:   # the grid, plus the phase boundaries for the pixel check
+        for t in [k * 0.25 for k in range(49)] + [3.9, 5.9, 11.9]:   # the grid, plus the phase boundaries for the pixel check
             br.js(f"(()=>{{const s=document.documentElement; s.pauseAnimations(); s.setCurrentTime({t});}})()")
             frames[t] = br.shot()
         br.call("Emulation.setEmulatedMedia", features=[{"name": "prefers-reduced-motion", "value": "reduce"}])
@@ -149,14 +162,14 @@ def main(svg_path):
     r = json.loads(red)
     if not (r["bright"] == "none" and r["glow"] == "none" and r["dotw"] == "none" and r["dots"] != "none" and abs(float(r["base"]) - 0.7) < 1e-6):
         bad.append("reduced-motion fallback")
-    sheet = Image.new("RGB", (1245, 11 * 71), (60, 60, 60))
-    for k in range(33):
-        t = k * 0.25
-        im = frames[t].resize((415, 65), Image.LANCZOS)
+    ST = (0, 1, 2, 3, 3.9, 4, 5, 5.9, 6, 7.5, 9, 11, 11.9)
+    sheet = Image.new("RGB", (1245, 5 * 71), (60, 60, 60))
+    for k, t in enumerate(ST):
+        im = frames[float(t)].resize((415, 65), Image.LANCZOS)
         ImageDraw.Draw(im).text((4, 2), f"{t:.2f}s", fill=(255, 220, 120))
         sheet.paste(im, ((k % 3) * 415, (k // 3) * 71))
-    sheet.save(ROOT / "qc" / "breath-sheet.png")
-    ref = np.asarray(frames[7.5]).astype(int).mean(axis=2)
+    sheet.save(ROOT / "qc" / "tempo-sheet.png")
+    ref = np.asarray(frames[11.9]).astype(int).mean(axis=2)
     mask = np.zeros(ref.shape, bool)
     mask[30:100, 330:500] = True
     mask &= ref > 200
@@ -165,9 +178,9 @@ def main(svg_path):
     if min(kept.values()) < 0.97:
         bad.append("title legibility")
     # ---- c. pixel check on zero-length frames
-    base = np.asarray(frames[7.5]).astype(int)
+    base = np.asarray(frames[11.9]).astype(int)
     print("stray bright pixels (white increase vs the rest frame, 9x9 around path start/end points):")
-    for t in (0.0, 3.4, 3.5, 6.9, 7.5):
+    for t in (0.0, 4.0, 5.0, 6.0, 11.9):
         a = np.asarray(frames[t]).astype(int)
         row = []
         for name, (x, y) in (("left start", lt), ("right end", rt)):
@@ -185,16 +198,19 @@ def main(svg_path):
     br = Browser(9344)
     try:
         br.open(page)
-        time.sleep(0.5)
-        a = np.asarray(br.shot()).astype(int)
-        time.sleep(1.5)
-        b = np.asarray(br.shot()).astype(int)
+        t0 = time.time()
+        shots = {}
+        for name, at in (("i1", 1.0), ("i2", 2.0), ("h1", 4.5), ("h2", 5.5)):
+            time.sleep(max(0, at - (time.time() - t0)))
+            shots[name] = np.asarray(br.shot()).astype(int)
     finally:
         br.close()
-    changed = int((np.abs(a - b).max(axis=2) > 30).sum())
-    print(f"real time through <img>: {changed} banner pixels changed between two screenshots 1.5s apart")
-    if changed < 100:
-        bad.append("no real-time change")
+    d = lambda x, y: int((np.abs(shots[x] - shots[y]).max(axis=2) > 30).sum())
+    print(f"real time through <img>: inhale 1s->2s {d('i1', 'i2')} px changed; hold 4.5s->5.5s {d('h1', 'h2')} px changed")
+    if d("i1", "i2") < 100:
+        bad.append("no real-time change in the inhale")
+    if d("h1", "h2") > 0:
+        bad.append("banner not still during the hold")
     print("PASS" if not bad else "FAIL: " + "; ".join(bad))
     return 1 if bad else 0
 

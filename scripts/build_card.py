@@ -16,10 +16,11 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 ICON_URL = "https://cdn.jsdelivr.net/npm/simple-icons@13.21.0/icons/{}.svg"
 
 # Breath timeline: seconds on one loop. Every keyframe time in the banner is derived from these.
-LOOP = 8.0
-LEFT_S, LEFT_E = 0.0, 3.4              # left line: grows from the left spiral's centre, collapses into the dot
-RIGHT_S, RIGHT_E = 3.5, 6.9            # right line: grows out of the dot, collapses at the right spiral's centre
-DOT_WARM, DOT_HOLD, DOT_REST = 2.4, 3.7, 5.0   # dot warms from 2.4s, peaks at LEFT_E, stays near peak to 3.7s, back to rest by 5.0s
+INHALE, HOLD, EXHALE = 4.0, 2.0, 6.0
+LOOP = INHALE + HOLD + EXHALE
+LEFT_S, LEFT_E = 0.0, INHALE           # left line: grows from the left spiral's centre, collapses into the dot
+RIGHT_S, RIGHT_E = INHALE + HOLD, LOOP # right line: grows out of the dot, collapses at the right spiral's centre
+DOT_WARM = INHALE - 1.5                # dot warms over the last 1.5s of the inhale, holds the peak through HOLD, eases to rest across EXHALE
 DOT_REST_OPACITY = 0.55
 STEPS = 20                             # linear keyframes per phase
 
@@ -379,7 +380,7 @@ def line_len(u):
 
 
 def kt(t):
-    return f"{t / LOOP:.5f}"
+    return f"{t / LOOP:.10g}"
 
 
 def animate(attr, times, values, calc="linear", tag="animate", extra=""):
@@ -397,22 +398,24 @@ def line_anims(s, e, peak):
     off = [f"{-line_tail(u):.5f}" if u is not None else ("0" if i == 0 else "-1") for i, u in enumerate(us)]
     otimes, ovals = ([0.0, e, LOOP], [f"{peak:g}", "0", "0"]) if s == 0 else ([0.0, s, e, LOOP], ["0", f"{peak:g}", "0", "0"])
     ctimes, cvals = [0.0, pts[1][0], e, LOOP], ["butt", "round", "butt", "butt"]
+    if e == LOOP:   # the phase ends with the loop: no duplicate keyTime
+        otimes, ovals, ctimes, cvals = otimes[:-1], ovals[:-1], ctimes[:-1], cvals[:-1]
     return (animate("stroke-dasharray", times, dash) + animate("stroke-dashoffset", times, off)
             + animate("opacity", otimes, ovals, "discrete") + animate("stroke-linecap", ctimes, cvals, "discrete"))
 
 
 def dot_curve():
-    """(times, f): f = 0 at rest, 1 at the peak. Warms from DOT_WARM, peaks exactly at LEFT_E, holds to DOT_HOLD, eases back by DOT_REST."""
+    """(times, f): f = 0 at rest, 1 at the peak. Warms from DOT_WARM, peaks exactly at LEFT_E, holds through HOLD, cosine-eases to rest across EXHALE."""
     ts, fs = [0.0], [0.0]
     for k in range(11):
         ts.append(DOT_WARM + (LEFT_E - DOT_WARM) * k / 10)
         fs.append(smooth(k / 10))
-    ts.append(DOT_HOLD)
+    ts.append(RIGHT_S)
     fs.append(1.0)
-    for k in range(1, 13):
-        ts.append(DOT_HOLD + (DOT_REST - DOT_HOLD) * k / 12)
-        fs.append(1 - smooth(k / 12))
-    return ts + [LOOP], fs + [0.0]
+    for k in range(1, 25):
+        ts.append(RIGHT_S + (LOOP - RIGHT_S) * k / 24)
+        fs.append(0.5 + 0.5 * math.cos(math.pi * k / 24))
+    return ts, fs
 
 
 def grp(name, parts):

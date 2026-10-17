@@ -270,8 +270,8 @@ with tempfile.TemporaryDirectory() as tmp:
     assert g["d_right"].startswith(f"M{cx:.2f} {cy:.2f}C") and g["d_left"].endswith(f"{cx:.2f} {cy:.2f}")          # both halves meet exactly on the dot, no gap
     assert g["samples"][0][0] < cx < g["samples"][-1][0]                                                             # left centre -> dot -> right centre
     an = qb.banner_anims(svg)
-    assert an["loop"] == b.LOOP == 8.0 and (b.LEFT_S, b.LEFT_E, b.RIGHT_S, b.RIGHT_E) == (0.0, 3.4, 3.5, 6.9)
-    dense = [k / 100 for k in range(0, 801)]
+    assert an["loop"] == b.LOOP == 12.0 and (b.INHALE, b.HOLD, b.EXHALE) == (4.0, 2.0, 6.0) and (b.LEFT_S, b.LEFT_E, b.RIGHT_S, b.RIGHT_E) == (0.0, 4.0, 6.0, 12.0)
+    dense = [k / 100 for k in range(0, 1201)]
     for side, (s, e) in (("left", (b.LEFT_S, b.LEFT_E)), ("right", (b.RIGHT_S, b.RIGHT_E))):
         L = [qb.seg_len(an, side, tt) for tt in dense]
         assert min(L) >= 0 and all(abs(x) < 1e-9 for tt, x in zip(dense, L) if tt <= s or tt >= e)               # zero outside its phase, never negative
@@ -284,8 +284,9 @@ with tempfile.TemporaryDirectory() as tmp:
     for u_ in (0.0, 0.25, 0.5, 0.75, 1.0):
         assert abs(b.line_len(u_) - max(0.0, math.sin(math.pi * u_ / 2) - (1 - math.cos(math.pi * u_ / 2)))) < 1e-12
     dots = [qb.value_at(an["dot"], tt, an["loop"]) for tt in dense]
-    assert abs(dense[dots.index(max(dots))] - 3.4) < 0.011 and abs(dots[0] - b.DOT_REST_OPACITY) < 1e-9 and abs(dots[500] - b.DOT_REST_OPACITY) < 1e-9
-    assert abs(qb.value_at(an["dot"], 3.7, 8.0) - max(dots)) < 1e-9 and abs(qb.value_at(an["dot"], 2.4, 8.0) - dots[0]) < 1e-9
+    assert abs(dense[dots.index(max(dots))] - 4.0) < 0.011 and abs(dots[0] - b.DOT_REST_OPACITY) < 1e-9 and abs(dots[1200] - b.DOT_REST_OPACITY) < 1e-9
+    assert all(abs(dots[k] - max(dots)) < 1e-9 for k in range(400, 601)) and abs(qb.value_at(an["dot"], 2.5, 12.0) - dots[0]) < 1e-9   # dot constant at peak through the hold
+    assert all(qb.seg_len(an, sd, tt) == 0 for sd in ("left", "right") for tt in dense if 4.0 <= tt <= 6.0)                           # both lines absent during the hold
     # groups for the spacing QC exist
     ids = {e.get("id") for e in root.iter(NS + "g") if e.get("id")}
     assert {"sec-banner", "sec-tokens", "sec-daily", "sec-tod", "sec-weekday", "sec-activity", "sec-streak", "sec-langs", "sec-stack", "sec-footer"} <= ids
