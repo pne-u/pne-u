@@ -12,6 +12,7 @@ HOME = os.path.expanduser("~")
 TOKENS = ROOT / "data" / "tokens.json"
 LOG = ROOT / "logs" / "token-sync.log"
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+IDENTITY = ["-c", "user.name=Pneu", "-c", "user.email=238723547+pne-u@users.noreply.github.com"]  # GitHub noreply address, never a personal one
 
 
 def log(msg):
@@ -88,7 +89,7 @@ def sync():
         log(f"unchanged total={out['total']}, no commit")
         return
     git("add", "data/tokens.json")
-    git("commit", "-m", f"Update token totals ({out['total']:,})")
+    git(*IDENTITY, "commit", "-m", f"Update token totals ({out['total']:,})")
     git("push", "origin", "HEAD:main")
     log(f"pushed {git('rev-parse', '--short', 'HEAD')} total={out['total']}")
 

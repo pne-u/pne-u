@@ -34,8 +34,8 @@ jobs:
           sed -i -E "s|(<span id=\"updated\">)[^<]*|\1$(date -u +'%Y-%m-%d %H:%M UTC')|" README.md
       - name: Commit if changed
         run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898283+github-actions[bot]@users.noreply.github.com'
+          git config user.name 'Pneu'
+          git config user.email '238723547+pne-u@users.noreply.github.com'
           git add assets/card.svg README.md
           git diff --cached --quiet && { echo "card unchanged"; exit 0; }
           git commit -m "Update profile card"
