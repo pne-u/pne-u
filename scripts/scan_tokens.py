@@ -69,9 +69,9 @@ def codex():
 
 
 def top_models(fams):
-    """Top 3 families by tokens, the rest summed into Other; the values add up to the total."""
+    """Top 4 families by tokens, the rest summed into Other; the values add up to the total."""
     ranked = sorted(((k, v) for k, v in fams.items() if v and k != "Other"), key=lambda kv: -kv[1])
-    top = dict(ranked[:3])
+    top = dict(ranked[:4])
     other = sum(fams.values()) - sum(top.values())
     return {**top, **({"Other": other} if other else {})}
 
