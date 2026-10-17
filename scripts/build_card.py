@@ -147,8 +147,8 @@ DISP = "PneuMono,'JetBrains Mono',ui-monospace,Consolas,monospace"
 NOTE = "Caveat,'Segoe Script','Bradley Hand',cursive"
 SEED = 20261016  # fixed constant: wobble never depends on data, so shapes do not jitter between rebuilds
 BANNER_H = 150
-GAP = 18
-LEFT_W, RX = 520, 580
+GAP = 50
+LEFT_W, RX = 520, 620
 RW = W - M - RX
 
 
@@ -284,29 +284,256 @@ def noisy_path(d, key, ax, ay):
     return re.sub(r"(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)", sub, d)
 
 
-def p_banner(d, y):
-    """The traced double spiral stretched into wide coils across the full width, joined by the S-line through the centre.
-    Dim base + a masked bright copy: a light band sweeps left to right, the centre dot warms as it passes."""
+# ---- banner: ONE continuous path, left spiral centre -> outward -> S-line -> dot -> right spiral -> right centre
+
+TRAV = 6 / 7  # share of the 7s loop spent travelling; the last second is rest
+
+
+def parse_bez(d):
+    toks = re.findall(r"[MC]|-?\d+(?:\.\d+)?", d)
+    start, segs, i = None, [], 0
+    while i < len(toks):
+        if toks[i] == "M":
+            start = (float(toks[i + 1]), float(toks[i + 2]))
+            i += 3
+        else:
+            v = [float(t) for t in toks[i + 1:i + 7]]
+            segs.append(((v[0], v[1]), (v[2], v[3]), (v[4], v[5])))
+            i += 7
+    return start, segs
+
+
+def reverse_bez(start, segs):
+    pts = [start] + [s[2] for s in segs]
+    return segs[-1][2], [(c2, c1, pts[k]) for k, (c1, c2, _) in reversed(list(enumerate(segs)))]
+
+
+def bez_samples(p0, c1, c2, p1, n=32):
+    out, prev, total = [], p0, 0.0
+    for i in range(1, n + 1):
+        t, u = i / n, 1 - i / n
+        x = u ** 3 * p0[0] + 3 * u * u * t * c1[0] + 3 * u * t * t * c2[0] + t ** 3 * p1[0]
+        y = u ** 3 * p0[1] + 3 * u * u * t * c1[1] + 3 * u * t * t * c2[1] + t ** 3 * p1[1]
+        total += math.hypot(x - prev[0], y - prev[1])
+        prev = (x, y)
+        out.append((x, y, total))
+    return total, out
+
+
+def banner_geometry(d, y):
+    """The merged banner path in page coordinates (wobble applied), its length, the arc length to the dot and sample points."""
     lg = d["logo"]
     dx, dy, _ = lg["dot"]
     sx, sy = IW / 300, 0.8
     cy = y + BANNER_H / 2
     tx, ty = M - 80 * sx, cy - dy * sy
-    cx = tx + dx * sx
-    paths = "".join(f'<path vector-effect="non-scaling-stroke" d="{noisy_path(lg[k], i, 1.0 / sx, 1.2 / sy)}"/>' for i, k in enumerate(("left", "right")))
-    layer = (f'<g transform="translate({tx:.1f} {ty:.1f}) scale({sx:.4f} {sy})" fill="none" stroke="{INK}" stroke-width="2.8" '
-             f'stroke-linecap="round" stroke-linejoin="round">{paths}</g>')
+    T = lambda p: (tx + p[0] * sx, ty + p[1] * sy)
+    ls, lsegs = parse_bez(noisy_path(lg["left"], 0, 1.0 / sx, 1.2 / sy))   # runs dot -> left spiral centre
+    rs, rsegs = parse_bez(noisy_path(lg["right"], 1, 1.0 / sx, 1.2 / sy))  # runs dot -> right spiral centre
+    start, lrev = reverse_bez(ls, lsegs)                                    # now runs left centre -> dot
+    start = T(start)
+    lrev = [(T(a), T(b), T(c)) for a, b, c in lrev]
+    rstart = T(rs)
+    rsegs = [(T(a), T(b), T(c)) for a, b, c in rsegs]
+    cmd = lambda c1, c2, p: f"C{c1[0]:.2f} {c1[1]:.2f} {c2[0]:.2f} {c2[1]:.2f} {p[0]:.2f} {p[1]:.2f}"
+    path = f"M{start[0]:.2f} {start[1]:.2f}" + "".join(cmd(*s) for s in lrev)
+    s, cur, samples = 0.0, start, [(start[0], start[1], 0.0)]
+    for c1, c2, p in lrev:
+        length, pts = bez_samples(cur, c1, c2, p)
+        samples += [(x, yy, s + l) for x, yy, l in pts]
+        s, cur = s + length, p
+    l_left = s
+    gap = math.hypot(rstart[0] - cur[0], rstart[1] - cur[1])
+    path += f"L{rstart[0]:.2f} {rstart[1]:.2f}" + "".join(cmd(*s_) for s_ in rsegs)
+    s, cur = s + gap, rstart
+    samples.append((rstart[0], rstart[1], s))
+    for c1, c2, p in rsegs:
+        length, pts = bez_samples(cur, c1, c2, p)
+        samples += [(x, yy, s + l) for x, yy, l in pts]
+        s, cur = s + length, p
+    return {"d": path, "total": s, "l_dot": l_left + gap / 2, "samples": samples, "dot": T((dx, dy))}
+
+
+def smooth(u):
+    return u * u * (3 - 2 * u)
+
+
+def inv_smooth(r):
+    lo, hi = 0.0, 1.0
+    for _ in range(50):
+        mid = (lo + hi) / 2
+        lo, hi = (mid, hi) if smooth(mid) < r else (lo, mid)
+    return (lo + hi) / 2
+
+
+def dash_frames(name, head, plen, n=24):
+    """Keyframes moving a dash of length plen so its leading end is at head(u), u in 0..1 over the travel part of the loop."""
+    rows = "".join(f"{k / n * TRAV * 100:.3f}%{{stroke-dashoffset:{plen - head(k / n):.2f}}}" for k in range(n + 1))
+    return f"@keyframes {name}{{{rows}100%{{stroke-dashoffset:{plen - head(1):.2f}}}}}"
+
+
+def breath_css(g):
+    L = g["total"]
+    P, P2 = 0.18 * L, 0.26 * L
+    pd = inv_smooth(g["l_dot"] / (L + P)) * TRAV * 100  # cycle percent when the pulse head reaches the dot
+    a = TRAV * 100
+    return (dash_frames("poff", lambda u: (L + P) * smooth(u), P)
+            + dash_frames("toff", lambda u: (L + P2) * smooth(min(1, max(0, (u - 0.05) / 0.95))), P2)
+            + f"@keyframes pop{{0%{{stroke-opacity:0}}{pd:.3f}%{{stroke-opacity:1}}{a:.3f}%{{stroke-opacity:0}}100%{{stroke-opacity:0}}}}"
+            f"@keyframes top{{0%{{stroke-opacity:0}}{pd + 2:.3f}%{{stroke-opacity:.45}}{a:.3f}%{{stroke-opacity:0}}100%{{stroke-opacity:0}}}}"
+            f"@keyframes ptint{{0%,{pd - 5:.3f}%{{stroke:{INK}}}{pd:.3f}%{{stroke:#FFC9B5}}{pd + 7:.3f}%,100%{{stroke:{INK}}}}}"
+            f"@keyframes warm{{0%,{pd - 8:.3f}%{{opacity:.22;transform:scale(1)}}{pd:.3f}%{{opacity:.95;transform:scale(1.15)}}{pd + 10:.3f}%,100%{{opacity:.22;transform:scale(1)}}}}"
+            f"@keyframes ring{{0%,{pd - 8:.3f}%{{opacity:0}}{pd:.3f}%{{opacity:.5}}{pd + 10:.3f}%,100%{{opacity:0}}}}"), P, P2, pd
+
+
+def grp(name, parts):
+    return f'<g id="sec-{name}">' + "".join(parts) + "</g>"
+
+
+def p_banner(d, y, css):
+    g = banner_geometry(d, y)
+    cx, cy = g["dot"]
+    kf, P, P2, pd = breath_css(g)
+    css.append(kf)
+    L = g["total"]
+    line = f'd="{g["d"]}" fill="none" stroke="{INK}" stroke-linecap="round" stroke-linejoin="round"'
     name = clip(d["prof"]["name"].upper(), 12)
     size = fit(name, 76, 400)
     outline = f' stroke="{BG}" stroke-width="5" paint-order="stroke" stroke-linejoin="round"'
-    out = [f'<g opacity=".3">{layer}</g>', f'<g class="lit" mask="url(#bm)">{layer}</g>',
+    out = [f'<path class="base" {line} stroke-width="2.8" opacity=".35"/>',
+           f'<path class="tail" {line} stroke-width="7" stroke-dasharray="{P2:.1f} {2 * L:.0f}" stroke-dashoffset="{P2:.1f}" stroke-opacity="0"/>',
+           f'<path class="pulse" {line} stroke-width="2.8" stroke-dasharray="{P:.1f} {2 * L:.0f}" stroke-dashoffset="{P:.1f}" stroke-opacity="0"/>',
            f'<circle class="ring" cx="{cx:.1f}" cy="{cy}" r="34" fill="{RED}" opacity="0"/>',
            f'<circle class="dotw" cx="{cx:.1f}" cy="{cy}" r="9" fill="{RED}" opacity=".22"/>',
            disp(W / 2, round(cy + size * 0.37 - 4), name, size, INK, "middle", outline)]
     if d["prof"].get("tagline"):
         out.append(text(W / 2, y + BANNER_H - 12, d["prof"]["tagline"], 18, SEC, "middle", extra=outline.replace('stroke-width="5"', 'stroke-width="4"')))
     out.append(note(M + 6, y + 30, "breathe"))
-    return out, BANNER_H
+    return [grp("banner", out)], BANNER_H
+
+
+# ---- usage shape (daily tokens, time of day, weekday)
+
+def short(v):
+    """Abbreviated count: 1 decimal under 10, none above (1.2B, 48M, 6.3M, 208K, 950)."""
+    units = [(1e9, "B"), (1e6, "M"), (1e3, "K"), (1, "")]
+    for i, (div, suf) in enumerate(units):
+        if v >= div:
+            if not suf:
+                return str(int(v))
+            x = v / div
+            s = f"{x:.1f}" if round(x, 1) < 10 else f"{round(x)}"
+            if float(s) >= 1000 and i > 0:
+                return f"{v / units[i - 1][0]:.1f}{units[i - 1][1]}"
+            return s + suf
+    return "0"
+
+
+LW = 8.9  # estimated width of one 16px label character
+
+
+def daily_labels(vals, xcs, tops, peak, today):
+    """{day index: (text, x, baseline y)}. Labels above non-zero bars; on a collision skip bars under 15% of the max, then drop the smallest
+    remaining until none touch. The peak and today are always labelled (today lifts 20px if it would still touch the peak)."""
+    mx = max(vals)
+    if mx <= 0:
+        return {}
+    lab = {i: short(v) for i, v in enumerate(vals) if v}
+    lift = {i: 0 for i in lab}
+    must = {peak, today} & set(lab)
+
+    def box(i):
+        w, y1 = len(lab[i]) * LW, tops[i] - 6 - lift[i]
+        return xcs[i] - w / 2, xcs[i] + w / 2, y1 - 16, y1
+
+    def clashes():
+        ids, out = sorted(lab), []
+        for a in range(len(ids)):
+            for b in range(a + 1, len(ids)):
+                A, B = box(ids[a]), box(ids[b])
+                if A[0] < B[1] + 3 and B[0] < A[1] + 3 and A[2] < B[3] + 2 and B[2] < A[3] + 2:
+                    out.append((ids[a], ids[b]))
+        return out
+
+    if clashes():
+        for i in list(lab):
+            if i not in must and vals[i] < 0.15 * mx:
+                del lab[i], lift[i]
+    while True:
+        c = clashes()
+        if not c:
+            break
+        drop = [i for pair in c for i in pair if i not in must]
+        if drop:
+            i = min(drop, key=lambda k: vals[k])
+            del lab[i], lift[i]
+        else:
+            lift[max(c[0])] += 20
+    return {i: (lab[i], xcs[i], tops[i] - 6 - lift[i]) for i in lab}
+
+
+def p_shape(d, y, css=None):
+    sh = d.get("shape")
+    if not sh:
+        return [], 0
+    days = sh["days"]
+    vals = [x["tokens"] for x in days]
+    mx, avg = max(vals + [0]), sum(vals) / max(len(vals), 1)
+    peak = vals.index(mx) if mx > 0 else None
+    HM, base, aw = 110, y + 160, 440
+    pitch = aw / len(vals)
+    daily = [title(M, y + 16, "Daily tokens, last 14 days"), wavy_line(M - 2, M + aw + 2, base, kid("dbase"))]
+    xcs = [M + pitch * (i + 0.5) for i in range(len(vals))]
+    tops = {}
+    for i, (v, x) in enumerate(zip(vals, xcs)):
+        daily.append(tick(x, base + 4, kid("dt") + i, 4))
+        if v == 0:
+            daily.append(f'<rect class="stub" x="{x - 9.25:.2f}" y="{base - 6.75:.2f}" width="18.5" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>')
+            continue
+        h = max(1.5, HM * v / mx)
+        tops[i] = base - h
+        col = RED if i == peak else (DIM if v < 0.5 * avg else INK)
+        daily.append(vbar(x, 20, base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}"'))
+    for i, x in enumerate(xcs):
+        wd = datetime.date.fromisoformat(days[i]["date"]).weekday()
+        daily.append(text(round(x, 1), base + 28, "MTWTFSS"[wd], 16, SEC, "middle"))
+    ti = len(days) - 1
+    daily.append(f'<circle class="today" cx="{xcs[ti]:.1f}" cy="{base + 42}" r="3.5" fill="{INK}"/>')
+    ya = base - HM * avg / mx if mx > 0 else base
+    daily.append(f'<line class="avg" x1="{M - 2}" y1="{ya:.2f}" x2="{M + aw + 4}" y2="{ya:.2f}" stroke="{SEC}" stroke-width="1.5" stroke-dasharray="7 6" '
+                 f'stroke-linecap="round" data-avg="{avg:.3f}"/>' + text(M + aw + 14, round(ya + 5, 1), f"avg {short(avg)}", 16, SEC, "start"))
+    for i, (txt, x, ly) in daily_labels(vals, xcs, tops, peak, ti).items():
+        daily.append(text(round(x, 1), round(ly, 1), txt, 16, RED if i == peak else SEC, "middle", extra=f' data-day="{i}"'))
+    # time of day: brightness = share of activity; the peak hour is the brightest cell
+    hours = sh["hours"]
+    mh = max(hours)
+    hp = hours.index(mh) if mh > 0 else None
+    cp = RW / 24
+    tod = [title(RX, y + 16, "Time of day")]
+    for h_ in range(24):
+        c = mix("#1E1D1A", INK, (hours[h_] / mh) ** 0.8 if mh else 0)
+        tod.append(f'<rect class="cell" x="{RX + h_ * cp:.2f}" y="{y + 30 + wob(kid("tc"), h_) * 0.6:.2f}" width="{cp - 2.2:.2f}" height="36" rx="2" fill="{c}" data-h="{h_}" data-n="{hours[h_]}"/>')
+    for h_, lab in ((0, "12a"), (6, "6a"), (12, "12p"), (18, "6p")):
+        x = RX + h_ * cp + (cp - 2.2) / 2
+        tod += [tick(x, y + 70, kid("th") + h_, 5), text(round(x - (cp - 2.2) / 2 if h_ == 0 else x, 1), y + 98, lab, 16, SEC, "start" if h_ == 0 else "middle")]
+    if hp is not None:
+        xp = min(max(RX + hp * cp + cp / 2, RX + 40), W - M - 40)
+        tod.append(text(round(xp, 1), y + 122, f"peak {hp % 12 or 12}{'a' if hp < 12 else 'p'}", 16, INK, "middle"))
+    # weekday
+    wk = sh["weekdays"]
+    mw, nw = max(wk), min(wk)
+    wbest = wk.index(mw) if mw > 0 else None
+    wb, wh, wp = y + 262, 56, RW / 7
+    wd = [title(RX, y + 188, "By weekday")]
+    for i, v in enumerate(wk):
+        xc = RX + wp * (i + 0.5)
+        col = INK if i == wbest else (DIM if (v == nw and mw != nw) else MID)
+        h = max(1.5, wh * v / mw) if v > 0 and mw > 0 else 0
+        wd += [vbar(xc, 22, wb - h, wb, col, kid("wd") + i, "wbar", f' data-v="{v}" data-h="{h:.3f}"') if h else
+               f'<rect class="stub" x="{xc - 10.25:.2f}" y="{wb - 6.75:.2f}" width="20.5" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>',
+               text(round(xc, 1), wb + 24, "MTWTFSS"[i], 16, SEC, "middle")]
+    wd.append(wavy_line(RX - 2, W - M + 2, wb, kid("wbase")))
+    return [grp("daily", daily), grp("tod", tod), grp("weekday", wd)], 296
 
 
 # ---- tokens
@@ -372,80 +599,6 @@ def p_tokens(d, y, css):
     return out, (ry - y) + max(len(segs), 1) * 30
 
 
-# ---- usage shape (daily tokens, time of day, weekday)
-
-def p_shape(d, y):
-    sh = d.get("shape")
-    if not sh:
-        return [], 0
-    days = sh["days"]
-    vals = [x["tokens"] for x in days]
-    mx, avg = max(vals + [0]), sum(vals) / max(len(vals), 1)
-    peak = vals.index(mx) if mx > 0 else None
-    HM, base, aw = 110, y + 160, 470
-    pitch = aw / len(vals)
-    out = [title(M, y + 16, "Daily tokens, last 14 days"), wavy_line(M - 2, M + aw + 2, base, kid("dbase"))]
-    xcs = [M + pitch * (i + 0.5) for i in range(len(vals))]
-    top = None
-    for i, (v, x) in enumerate(zip(vals, xcs)):
-        out.append(tick(x, base + 4, kid("dt") + i, 4))
-        if v == 0:
-            out.append(f'<rect class="stub" x="{x - 10.25:.2f}" y="{base - 6.75:.2f}" width="20.5" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>')
-            continue
-        h = max(1.5, HM * v / mx)
-        col = RED if i == peak else (DIM if v < 0.5 * avg else INK)
-        out.append(vbar(x, 22, base - h, base, col, kid("db") + i, "dbar", f' data-v="{v}" data-h="{h:.3f}" data-base="{base}"'))
-        if i == peak:
-            top = base - h
-    letters = "MTWTFSS"
-    for i, x in enumerate(xcs):
-        wd = datetime.date.fromisoformat(days[i]["date"]).weekday()
-        out.append(text(round(x, 1), base + 28, letters[wd], 16, SEC, "middle"))
-    ti = len(days) - 1
-    out.append(f'<circle class="today" cx="{xcs[ti]:.1f}" cy="{base + 42}" r="3.5" fill="{INK}"/>')
-    ya = base - HM * avg / mx if mx > 0 else base
-    out.append(f'<line class="avg" x1="{M - 2}" y1="{ya:.2f}" x2="{M + aw + 4}" y2="{ya:.2f}" stroke="{SEC}" stroke-width="1.5" stroke-dasharray="7 6" '
-               f'stroke-linecap="round" data-avg="{avg:.3f}"/>' + text(M + LEFT_W, round(ya + 5, 1), "avg", 16, SEC, "end"))
-    out.append(text(M, base + 74, "hollow = no usage", 16, SEC))
-    if peak is not None:
-        out.append(text(round(xcs[peak], 1), round(top - 8, 1), "peak", 16, RED, "middle"))
-        if xcs[peak] > M + 380:
-            out += [note(xcs[peak] - 34, top - 30, "best day", 22, "end"), arrow(xcs[peak] - 30, top - 22, xcs[peak] - 14, top + 6, kid("bd"))]
-        else:
-            out += [note(xcs[peak] + 34, top - 30, "best day"), arrow(xcs[peak] + 30, top - 22, xcs[peak] + 14, top + 6, kid("bd"))]
-    # time of day
-    hours = sh["hours"]
-    mh = max(hours)
-    hp = hours.index(mh) if mh > 0 else None
-    cp = RW / 24
-    out.append(title(RX, y + 16, "Time of day"))
-    for h_ in range(24):
-        c = RED if h_ == hp else mix("#1E1D1A", INK, (hours[h_] / mh) ** 0.8 if mh else 0)
-        out.append(f'<rect class="cell" x="{RX + h_ * cp:.2f}" y="{y + 30 + wob(kid("tc"), h_) * 0.6:.2f}" width="{cp - 2.4:.2f}" height="36" rx="2" fill="{c}" data-h="{h_}" data-n="{hours[h_]}"/>')
-    for h_, lab in ((0, "12a"), (6, "6a"), (12, "12p"), (18, "6p")):
-        x = RX + h_ * cp + (cp - 2.4) / 2
-        out += [tick(x, y + 70, kid("th") + h_, 5), text(round(x - (cp - 2.4) / 2 if h_ == 0 else x, 1), y + 98, lab, 16, SEC, "start" if h_ == 0 else "middle")]
-    if hp is not None:
-        lab = f"peak {hp % 12 or 12}{'a' if hp < 12 else 'p'}"
-        xp = min(max(RX + hp * cp + cp / 2, RX + 40), W - M - 40)
-        out.append(text(round(xp, 1), y + 122, lab, 16, RED, "middle"))
-    # weekday
-    wk = sh["weekdays"]
-    mw, nw = max(wk), min(wk)
-    wbest = wk.index(mw) if mw > 0 else None
-    wb, wh, wp = y + 214, 56, RW / 7
-    out.append(title(RX, y + 148, "By weekday"))
-    for i, v in enumerate(wk):
-        xc = RX + wp * (i + 0.5)
-        col = INK if i == wbest else (DIM if (v == nw and mw != nw) else MID)
-        h = max(1.5, wh * v / mw) if v > 0 and mw > 0 else 0
-        out += [vbar(xc, 26, wb - h, wb, col, kid("wd") + i, "wbar", f' data-v="{v}" data-h="{h:.3f}"') if h else
-                f'<rect class="stub" x="{xc - 12.25:.2f}" y="{wb - 6.75:.2f}" width="24.5" height="6" rx="3" fill="none" stroke="{SEC}" stroke-width="1.5"/>',
-                text(round(xc, 1), wb + 24, "MTWTFSS"[i], 16, SEC, "middle")]
-    out.append(wavy_line(RX - 2, W - M + 2, wb, kid("wbase")))
-    return out, 244
-
-
 # ---- activity, streak, languages, stack
 
 def p_contrib(d, y):
@@ -462,19 +615,19 @@ def p_contrib(d, y):
         if v == 0:
             out.append(f'<rect x="{x - 3:.1f}" y="{base - 2}" width="6" height="2" rx="1" fill="{EMPTY}"/>')
         else:
-            out.append(vbar(x, 6, base - max(3, round(ch * v / mx)), base, RED if i == peak else BAR, kid("ab") + i, "bar", "", f"animation-delay:{i * 0.08:.2f}s"))
+            out.append(vbar(x, 6, base - max(3, round(ch * v / mx)), base, INK if i == peak else BAR, kid("ab") + i, "bar", "", f"animation-delay:{i * 0.08:.2f}s"))
     if peak is not None:
         out.append(text(M + peak * pitch + pitch / 2, base - max(3, round(ch * vals[peak] / mx)) - 8, str(vals[peak]), 16, INK, "middle"))
     pts = " ".join(f"{M + i * pitch + pitch / 2:.1f},{base - ch * m / mx:.1f}" for i, m in enumerate(ma))
     out.append(f'<polyline points="{pts}" fill="none" stroke="{INK}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>')
     out.append(f'<line x1="{M}" y1="{base + 28}" x2="{M + 24}" y2="{base + 28}" stroke="{INK}" stroke-width="2" stroke-linecap="round"/>'
                + text(M + 34, base + 33, "7-day avg", 16, SEC))
-    out.append(title(RX, y + 16, "Streak"))
+    act, out = out, [title(RX, y + 16, "Streak")]
     for x, v, lab, col in ((RX, d["cur"], "now", RED if d["cur"] else INK), (RX + 130, d["best"], "best", INK)):
         out += [num(x, y + 74, str(v), 40, col), text(x, y + 100, lab, 16, SEC)]
     if d["cur"] >= 3:
         out += [note(RX + 70, y + 40, "on a run"), arrow(RX + 66, y + 44, RX + 34, y + 54, kid("run"))]
-    return out, 152
+    return [grp("activity", act), grp("streak", out)], 160
 
 
 def p_langs_stack(d, y):
@@ -491,12 +644,12 @@ def p_langs_stack(d, y):
             out += [text(M, ry + 14, clip(name, 14), 18), bar_row(bx, bx + bw, ry + 9, 10, p, INK if i == 0 else BAR, "l" + name, name),
                     text(M + LEFT_W, ry + 14, f"{p * 100:.1f}%", 18, INK, "end")]
         lang_h = 34 + len(langs) * 26
+    langs_out, out = out, [title(RX, y + 16, "Stack")]
     tools = d["tools"]
-    out.append(title(RX, y + 16, "Stack"))
     for i, t in enumerate(tools):
         out.append(f'<g transform="translate({RX + (i % 4) * 64} {y + 38 + (i // 4) * 44}) scale(1.5)">'
                    f'<title>{escape(t["name"])}</title><path d="{d["icons"][t["icon"]]}" fill="{INK}"/></g>')
-    return out, max(lang_h, 38 + max(1, -(-len(tools) // 4)) * 44 - 8)
+    return [grp("langs", langs_out), grp("stack", out)], max(lang_h, 38 + max(1, -(-len(tools) // 4)) * 44 - 8)
 
 
 def font_b64(name):
@@ -509,32 +662,27 @@ def build(d):
     css = []
     parts, y = [], 0
     for fn in (p_banner, p_tokens, p_shape, p_contrib, p_langs_stack):
-        out, h = fn(d, y, css) if fn is p_tokens else fn(d, y)
+        out, h = fn(d, y, css) if fn in (p_banner, p_tokens) else fn(d, y)
         parts += out
         y += h + (GAP if h else 0)
-    foot = y - GAP + 30
-    parts.append(text(M, foot, f"Updated {et_label(d['now'])}", 16, SEC))
-    height = foot + 14
+    foot = y - GAP + 66
+    parts.append(grp("footer", [text(M, foot, f"Updated {et_label(d['now'])}", 16, SEC)]))
+    height = foot + 24
     dfont, nfont = font_b64("display-font.b64"), font_b64("note-font.b64")
     static = (
         (f"@font-face{{font-family:PneuMono;font-weight:800;src:url(data:font/woff2;base64,{dfont}) format('woff2')}}" if dfont else "")
         + (f"@font-face{{font-family:Caveat;font-weight:400;src:url(data:font/woff2;base64,{nfont}) format('woff2')}}" if nfont else "")
-        + "@keyframes band{0%{transform:translateX(0)}100%{transform:translateX(1140px)}}"
-        "@keyframes warm{0%,25%{opacity:.22;transform:scale(1)}45%,55%{opacity:.95;transform:scale(1.18)}80%,100%{opacity:.22;transform:scale(1)}}"
-        "@keyframes ring{0%,25%{opacity:0}45%,55%{opacity:.5}80%,100%{opacity:0}}"
-        "@keyframes breath-bar{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.04)}}"
-        ".band{animation:band 6s linear infinite}"
-        ".dotw{transform-box:fill-box;transform-origin:center;animation:warm 6s ease-in-out infinite}"
-        ".ring{animation:ring 6s ease-in-out infinite}"
+        + "@keyframes breath-bar{0%,100%{transform:scaleY(1)}50%{transform:scaleY(1.04)}}"
+        ".dotw{transform-box:fill-box;transform-origin:center;animation:warm 7s linear infinite}"
+        ".ring{animation:ring 7s linear infinite}"
+        ".pulse{animation:poff 7s linear infinite,pop 7s linear infinite,ptint 7s linear infinite}"
+        ".tail{animation:toff 7s linear infinite,top 7s linear infinite}"
         ".bar{transform-box:fill-box;transform-origin:50% 100%;animation:breath-bar 6s ease-in-out infinite}"
         ".sweep{animation:sweep 2.4s ease-in-out infinite}"
-        "@media (prefers-reduced-motion:reduce){.band,.dotw,.ring,.bar{animation:none}.lit{mask:none}.dotw{opacity:.7}.ring{opacity:.25}.sweep{display:none}}")
+        "@media (prefers-reduced-motion:reduce){.dotw,.ring,.bar{animation:none}.pulse,.tail,.sweep{display:none}.base{opacity:.7}.dotw{opacity:.8}.ring{opacity:.25}}")
     desc = (f"{d['prof']['name']} GitHub profile card: {len(d['tools'])} tools, {n(d['total'])} contributions, "
             f"{d['cur']} day streak, {n(d['tokens']['total'])} tokens.")
-    defs = (f'<linearGradient id="bg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#000"/><stop offset=".5" stop-color="#fff"/>'
-            f'<stop offset="1" stop-color="#000"/></linearGradient>'
-            f'<mask id="bm" maskUnits="userSpaceOnUse" x="0" y="0" width="{W}" height="{BANNER_H}"><g class="band">'
-            f'<rect x="-260" y="0" width="260" height="{BANNER_H}" fill="url(#bg)"/></g></mask>')
+    defs = ""
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{height}" viewBox="0 0 {W} {height}" role="img" aria-label="{escape(desc)}">'
             f'<title>{escape(desc)}</title><style>{static}{"".join(css)}</style><defs>{defs}</defs>'
             f'<rect width="{W}" height="{height}" rx="16" fill="{BG}"/>' + "".join(parts) + "</svg>\n")
