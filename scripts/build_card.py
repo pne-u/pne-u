@@ -429,47 +429,62 @@ def short(v):
     return "0"
 
 
-LW = 8.9  # estimated width of one 16px label character
+def label_w(t):
+    """Estimated rendered width of a 16px label: digits and dots about 9px, letters (M, B, K) about 14px."""
+    return sum(9.0 if c.isdigit() or c == "." else 14.5 for c in t)
 
 
 def daily_labels(vals, xcs, tops, peak, today):
-    """{day index: (text, x, baseline y)}. Labels above non-zero bars; on a collision skip bars under 15% of the max, then drop the smallest
-    remaining until none touch. The peak and today are always labelled (today lifts 20px if it would still touch the peak)."""
+    """{day index: (text, x, baseline y)}. Labels above non-zero bars. On a collision: skip bars under 15% of the max, nudge neighbours
+    apart by up to 7px each, then drop the smallest remaining until none touch. The peak and today are always labelled
+    (today lifts 20px if it would still touch the peak)."""
     mx = max(vals)
     if mx <= 0:
         return {}
     lab = {i: short(v) for i, v in enumerate(vals) if v}
-    lift = {i: 0 for i in lab}
+    lift, dx = {i: 0 for i in lab}, {i: 0.0 for i in lab}
     must = {peak, today} & set(lab)
 
     def box(i):
-        w, y1 = len(lab[i]) * LW, tops[i] - 6 - lift[i]
-        return xcs[i] - w / 2, xcs[i] + w / 2, y1 - 16, y1
+        w, y1, x = label_w(lab[i]), tops[i] - 6 - lift[i], xcs[i] + dx[i]
+        return x - w / 2, x + w / 2, y1 - 16, y1 + 5
 
     def clashes():
         ids, out = sorted(lab), []
         for a in range(len(ids)):
             for b in range(a + 1, len(ids)):
                 A, B = box(ids[a]), box(ids[b])
-                if A[0] < B[1] + 3 and B[0] < A[1] + 3 and A[2] < B[3] + 2 and B[2] < A[3] + 2:
+                if A[0] < B[1] + 3 and B[0] < A[1] + 3 and A[2] < B[3] + 1 and B[2] < A[3] + 1:
                     out.append((ids[a], ids[b]))
         return out
+
+    def drop(i):
+        del lab[i], lift[i], dx[i]
 
     if clashes():
         for i in list(lab):
             if i not in must and vals[i] < 0.15 * mx:
-                del lab[i], lift[i]
+                drop(i)
+    for _ in range(4 * len(lab) + 4):                      # nudge colliding neighbours apart sideways
+        c = clashes()
+        if not c:
+            break
+        a, b = c[0]
+        need = (label_w(lab[a]) + label_w(lab[b])) / 2 + 3 - ((xcs[b] + dx[b]) - (xcs[a] + dx[a]))
+        if need / 2 + max(abs(dx[a]), abs(dx[b])) > 7:
+            break
+        dx[a] -= need / 2
+        dx[b] += need / 2
     while True:
         c = clashes()
         if not c:
             break
-        drop = [i for pair in c for i in pair if i not in must]
-        if drop:
-            i = min(drop, key=lambda k: vals[k])
-            del lab[i], lift[i]
+        cand = [i for pair in c for i in pair if i not in must]
+        if cand:
+            drop(min(cand, key=lambda k: vals[k]))
         else:
             lift[max(c[0])] += 20
-    return {i: (lab[i], xcs[i], tops[i] - 6 - lift[i]) for i in lab}
+    return {i: (lab[i], xcs[i] + dx[i], tops[i] - 6 - lift[i]) for i in lab}
 
 
 def p_shape(d, y, css=None):

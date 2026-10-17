@@ -248,10 +248,10 @@ with tempfile.TemporaryDirectory() as tmp:
     mx = max(vals)
     assert labels[10][0] == "236M" and labels[10][1] == b.RED and labels[13][0] == "76M"      # peak (red) and today always labelled
     assert all(vals[i] and labels[i][0] == b.short(vals[i]) for i in labels) and not any(vals[i] == 0 for i in labels)
-    boxes = [(x - len(t) * b.LW / 2, x + len(t) * b.LW / 2, y - 16, y) for t, _, x, y in labels.values()]
+    boxes = [(x - b.label_w(t) / 2, x + b.label_w(t) / 2, y - 16, y + 5) for t, _, x, y in labels.values()]
     for i, A in enumerate(boxes):
         for B in boxes[i + 1:]:
-            assert A[1] + 3 <= B[0] or B[1] + 3 <= A[0] or A[3] + 2 <= B[2] or B[3] + 2 <= A[2], "labels overlap"
+            assert A[1] + 3 <= B[0] or B[1] + 3 <= A[0] or A[3] + 1 <= B[2] or B[3] + 1 <= A[2], "labels overlap"
     # crowded: neighbours collide, small bars (<15% of the max) lose their label, peak and today keep theirs
     xs = [100 + 20 * i for i in range(6)]
     got = b.daily_labels([1000, 900, 5, 800, 3, 4], xs, {i: 100 for i in range(6)}, 0, 5)
